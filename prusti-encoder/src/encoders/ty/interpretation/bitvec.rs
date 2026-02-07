@@ -1,6 +1,7 @@
 use task_encoder::TaskEncoder;
 use vir::{
-    BackendInterpretationPair, CastType, DomainGenData, DomainIdnCSnap, FunctionIdn, ViperIdent,
+    Arity, BackendInterpretationPair, CastType, CompType, DomainFunctionData, DomainGenData,
+    DomainIdnCSnap, FunctionIdn, Type, VirCtxt,
 };
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone, Copy)]
@@ -11,13 +12,71 @@ pub enum BitVecSize {
     BitVec128,
 }
 
+impl BitVecSize {
+    fn from_int(i: u64) -> BitVecSize {
+        match i {
+            16 => Self::BitVec16,
+            32 => Self::BitVec32,
+            64 => Self::BitVec64,
+            128 => Self::BitVec128,
+            _ => panic!("illegal bit width {i}"),
+        }
+    }
+}
+
+impl From<prusti_rustc_interface::middle::ty::IntTy> for BitVecSize {
+    fn from(value: prusti_rustc_interface::middle::ty::IntTy) -> Self {
+        Self::from_int(
+            value
+                .bit_width()
+                .unwrap_or((std::mem::size_of::<isize>() * 8) as u64),
+        )
+    }
+}
+
+impl From<prusti_rustc_interface::middle::ty::UintTy> for BitVecSize {
+    fn from(value: prusti_rustc_interface::middle::ty::UintTy) -> Self {
+        Self::from_int(
+            value
+                .bit_width()
+                .unwrap_or((std::mem::size_of::<isize>() * 8) as u64),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct BitVecDomain<'vir> {
     pub domain: vir::DomainIdn<'vir, vir::CSnap>,
     pub from_int: FunctionIdn<'vir, vir::Prim, vir::CSnap>,
+    pub to_int: FunctionIdn<'vir, vir::CSnap, vir::Prim>,
+    pub shl: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
 }
 
 pub struct BitVecEnc;
+
+// TODO: can we really not use `DomainBuilder`?
+struct Builder<'vir> {
+    domain_name: &'static str,
+    vcx: &'vir VirCtxt<'vir>,
+}
+
+impl<'vir> Builder<'vir> {
+    // TODO: instead of returning the function data, push it into a internal (small) vec
+    fn backend_func<A: Arity, T: CompType>(
+        &mut self,
+        name: &str,
+        args: A::Tys<'vir>,
+        ret: Type<'vir, T>,
+        interpretation: &'static str,
+    ) -> (&'vir DomainFunctionData<'vir>, FunctionIdn<'vir, A, T>) {
+        let name = vir::vir_format!(self.vcx, "{}_{name}", self.domain_name);
+        let ident = FunctionIdn::new(vir::ViperIdent::new(name), args, ret);
+        let function = self
+            .vcx
+            .mk_domain_function(ident, false, Some(interpretation));
+        (function, ident)
+    }
+}
 
 impl TaskEncoder for BitVecEnc {
     task_encoder::encoder_cache!(BitVecEnc);
@@ -56,26 +115,33 @@ impl TaskEncoder for BitVecEnc {
 
             let self_type = domain_ident();
 
-            let from_int_name = vir::vir_format!(vcx, "{}_from_int", domain_name);
-
-            let from_int = FunctionIdn::new(
-                ViperIdent::new(from_int_name),
+            let mut builder = Builder { domain_name, vcx };
+            let (from_int_data, from_int) = builder.backend_func(
+                "from_int",
                 vir::TYPE_INT.upcast_ty(),
                 self_type,
-            );
-
-            let from_int_data = vcx.mk_domain_function(
-                from_int,
-                false,
-                Some(match *task_key {
+                match *task_key {
                     BitVecSize::BitVec16 => "(_ int2bv 16)",
                     BitVecSize::BitVec32 => "(_ int2bv 32)",
                     BitVecSize::BitVec64 => "(_ int2bv 64)",
                     BitVecSize::BitVec128 => "(_ int2bv 128)",
-                }),
+                },
             );
+            let (to_int_data, to_int) = builder.backend_func(
+                "to_int",
+                self_type,
+                vir::TYPE_INT.upcast_ty(),
+                match *task_key {
+                    BitVecSize::BitVec16 => "(_ bv2int 16)",
+                    BitVecSize::BitVec32 => "(_ bv2int 32)",
+                    BitVecSize::BitVec64 => "(_ bv2int 64)",
+                    BitVecSize::BitVec128 => "(_ bv2int 128)",
+                },
+            );
+            let (shl_data, shl) =
+                builder.backend_func("shl", (self_type, self_type), self_type, "bvshl");
 
-            let functions = &[from_int_data];
+            let functions = &[from_int_data, to_int_data, shl_data];
 
             let domain_data = vcx.mk_domain::<(), !>(
                 domain_ident.name(),
@@ -132,6 +198,8 @@ impl TaskEncoder for BitVecEnc {
                 BitVecDomain {
                     domain: domain_ident,
                     from_int,
+                    to_int,
+                    shl,
                 },
             ))
         })
