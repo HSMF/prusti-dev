@@ -50,6 +50,10 @@ pub struct BitVecDomain<'vir> {
     pub from_int: FunctionIdn<'vir, vir::Prim, vir::CSnap>,
     pub to_int: FunctionIdn<'vir, vir::CSnap, vir::Prim>,
     pub shl: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub shr: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub bit_not: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+    pub bit_or: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub bit_and: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
 }
 
 pub struct BitVecEnc;
@@ -58,6 +62,7 @@ pub struct BitVecEnc;
 struct Builder<'vir> {
     domain_name: &'static str,
     vcx: &'vir VirCtxt<'vir>,
+    functions: Vec<&'vir DomainFunctionData<'vir>>,
 }
 
 impl<'vir> Builder<'vir> {
@@ -68,13 +73,14 @@ impl<'vir> Builder<'vir> {
         args: A::Tys<'vir>,
         ret: Type<'vir, T>,
         interpretation: &'static str,
-    ) -> (&'vir DomainFunctionData<'vir>, FunctionIdn<'vir, A, T>) {
+    ) -> FunctionIdn<'vir, A, T> {
         let name = vir::vir_format!(self.vcx, "{}_{name}", self.domain_name);
         let ident = FunctionIdn::new(vir::ViperIdent::new(name), args, ret);
         let function = self
             .vcx
             .mk_domain_function(ident, false, Some(interpretation));
-        (function, ident)
+        self.functions.push(function);
+        ident
     }
 }
 
@@ -115,8 +121,12 @@ impl TaskEncoder for BitVecEnc {
 
             let self_type = domain_ident();
 
-            let mut builder = Builder { domain_name, vcx };
-            let (from_int_data, from_int) = builder.backend_func(
+            let mut builder = Builder {
+                domain_name,
+                vcx,
+                functions: vec![],
+            };
+            let from_int = builder.backend_func(
                 "from_int",
                 vir::TYPE_INT.upcast_ty(),
                 self_type,
@@ -127,7 +137,7 @@ impl TaskEncoder for BitVecEnc {
                     BitVecSize::BitVec128 => "(_ int2bv 128)",
                 },
             );
-            let (to_int_data, to_int) = builder.backend_func(
+            let to_int = builder.backend_func(
                 "to_int",
                 self_type,
                 vir::TYPE_INT.upcast_ty(),
@@ -138,10 +148,16 @@ impl TaskEncoder for BitVecEnc {
                     BitVecSize::BitVec128 => "(_ bv2int 128)",
                 },
             );
-            let (shl_data, shl) =
-                builder.backend_func("shl", (self_type, self_type), self_type, "bvshl");
+            let shl = builder.backend_func("shl", (self_type, self_type), self_type, "bvshl");
 
-            let functions = &[from_int_data, to_int_data, shl_data];
+            let shr = builder.backend_func("shr", (self_type, self_type), self_type, "bvshr");
+            let bit_or = builder.backend_func("bit_or", (self_type, self_type), self_type, "bvor");
+            let bit_and =
+                builder.backend_func("bit_and", (self_type, self_type), self_type, "bvand");
+
+            let bit_not = builder.backend_func("bit_not", self_type, self_type, "bvnot");
+
+            let functions = &builder.functions;
 
             let domain_data = vcx.mk_domain::<(), !>(
                 domain_ident.name(),
@@ -200,6 +216,10 @@ impl TaskEncoder for BitVecEnc {
                     from_int,
                     to_int,
                     shl,
+                    shr,
+                    bit_not,
+                    bit_or,
+                    bit_and,
                 },
             ))
         })

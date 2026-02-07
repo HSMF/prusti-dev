@@ -500,14 +500,16 @@ impl MirBuiltinEnc {
             TyPurePrimDataKind::Native(prim_l_ty) => {
                 let lhs = (prim_l_ty.snap_to_prim)(lhs);
                 let rhs = (prim_r_ty.expect_native().snap_to_prim)(rhs);
-                // TODO: only require this if actually needed
-                let bit_vec = deps.require_dep::<BitVecEnc>(match l_ty.kind() {
-                    ty::TyKind::Int(kind) => (*kind).into(),
-                    ty::TyKind::Uint(kind) => (*kind).into(),
-                    k => todo!("not int {k:?}"),
-                })?;
-                let (pres, val) =
-                    Self::handle_bin_op_native(vcx, lhs, rhs, res_ty, op, l_ty, r_ty, bit_vec);
+                let (pres, val) = if Self::needs_bitvec(op) {
+                    let bit_vec = deps.require_dep::<BitVecEnc>(match l_ty.kind() {
+                        ty::TyKind::Int(kind) => (*kind).into(),
+                        ty::TyKind::Uint(kind) => (*kind).into(),
+                        k => todo!("not int {k:?}"),
+                    })?;
+                    Self::handle_bin_op_bitvec(vcx, (lhs, l_ty), (rhs, r_ty), op, bit_vec)
+                } else {
+                    Self::handle_bin_op_native(vcx, lhs, rhs, res_ty, op, l_ty, r_ty)
+                };
                 let val = (prim_res_ty.prim_to_snap)(val);
                 Ok(vcx.mk_function(
                     function,
@@ -526,18 +528,25 @@ impl MirBuiltinEnc {
         }
     }
 
-    fn handle_bin_op_native<'vir>(
+    fn needs_bitvec(op: mir::BinOp) -> bool {
+        use mir::BinOp as B;
+        matches!(
+            op,
+            B::Shl | B::Shr | B::ShlUnchecked | B::ShrUnchecked | B::BitOr | B::BitAnd | B::BitXor
+        )
+    }
+
+    fn handle_bin_op_bitvec<'vir>(
         vcx: &'vir vir::VirCtxt<'vir>,
-        lhs: vir::ExprPrim<'vir>,
-        mut rhs: vir::ExprPrim<'vir>,
-        res_ty: ty::Ty<'vir>,
+        lhs: (vir::ExprPrim<'vir>, ty::Ty<'vir>),
+        rhs: (vir::ExprPrim<'vir>, ty::Ty<'vir>),
         op: mir::BinOp,
-        l_ty: ty::Ty<'vir>,
-        _r_ty: ty::Ty<'vir>,
         bit_vec: BitVecDomain<'vir>,
     ) -> (Vec<vir::ExprBool<'vir>>, vir::ExprPrim<'vir>) {
-        use mir::BinOp::*;
-        if matches!(op, Shl | Shr) {
+        use mir::BinOp as B;
+        let (mut rhs, _r_ty) = rhs;
+        let (lhs, l_ty) = lhs;
+        if matches!(op, B::Shl | B::Shr) {
             // RHS must be smaller than the bit width of the LHS, this is
             // implicit in the `Shl` and `Shr` operators.
             rhs = vcx.mk_bin_op_expr(
@@ -546,6 +555,64 @@ impl MirBuiltinEnc {
                 vcx.get_bit_width_int(l_ty.kind()),
             );
         }
+
+        if let B::BitXor = op {
+            // a ^ b == (a | b) & !(a & b)
+            let lhs = (bit_vec.from_int)(lhs);
+            let rhs = (bit_vec.from_int)(rhs);
+            let left = (bit_vec.bit_or)(lhs, rhs);
+            let right = (bit_vec.bit_not)((bit_vec.bit_and)(lhs, rhs));
+            let ret = (bit_vec.bit_and)(left, right);
+            let ret = (bit_vec.to_int)(ret);
+            return (vec![], ret);
+        }
+
+        let bitop = match op {
+            B::Shl | B::ShlUnchecked => bit_vec.shl,
+            B::Shr | B::ShrUnchecked => bit_vec.shr,
+            B::BitOr => bit_vec.bit_or,
+            B::BitAnd => bit_vec.bit_and,
+            _ => unreachable!(),
+        };
+
+        let pres = match op {
+            // Overflow is well defined as wrapping (implicit), but shifting by
+            // more than the bit width (or less than 0) is undefined behavior.
+            B::ShlUnchecked | B::ShrUnchecked => {
+                let min = vcx.mk_int::<0>();
+                // `arg2 >= 0`
+                let lower_bound = vcx
+                    .mk_bin_op_expr(vir::BinOpKind::CmpGe, rhs.downcast_ty(), min)
+                    .downcast_ty::<vir::Bool>();
+                let max = vcx.get_bit_width_int(l_ty.kind());
+                // `arg2 < bit_width(arg1)`
+                let upper_bound = vcx
+                    .mk_bin_op_expr(vir::BinOpKind::CmpLt, rhs.downcast_ty(), max)
+                    .downcast_ty::<vir::Bool>();
+                vec![lower_bound, upper_bound]
+            }
+            _ => vec![],
+        };
+
+        // convert from int, perform operation, convert back to int
+        let lhs = (bit_vec.from_int)(lhs);
+        let rhs = (bit_vec.from_int)(rhs);
+        let ret = (bitop)(lhs, rhs);
+        let ret = (bit_vec.to_int)(ret);
+
+        (pres, ret)
+    }
+
+    fn handle_bin_op_native<'vir>(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        lhs: vir::ExprPrim<'vir>,
+        rhs: vir::ExprPrim<'vir>,
+        res_ty: ty::Ty<'vir>,
+        op: mir::BinOp,
+        _l_ty: ty::Ty<'vir>,
+        _r_ty: ty::Ty<'vir>,
+    ) -> (Vec<vir::ExprBool<'vir>>, vir::ExprPrim<'vir>) {
+        use mir::BinOp::*;
 
         match op {
             Cmp => {
@@ -564,14 +631,6 @@ impl MirBuiltinEnc {
                     .upcast_ty();
                 (vec![], val)
             }
-            Shl | Shr => {
-                let lhs = (bit_vec.from_int)(lhs);
-                let rhs = (bit_vec.from_int)(rhs);
-                let ret = (bit_vec.shl)(lhs, rhs);
-                let ret = (bit_vec.to_int)(ret);
-                // let ret = Self::get_wrapped_val(vcx, ret, res_ty);
-                (vec![], ret)
-            }
             _ => {
                 let op_kind = vir::BinOpKind::from(op);
                 let viper_val = vcx
@@ -580,7 +639,7 @@ impl MirBuiltinEnc {
                 match op {
                     // Overflow well defined as wrapping (implicit) and for the shifts
                     // the RHS will be masked to the bit width.
-                    Add | Sub | Mul | Shl | Shr => (
+                    Add | Sub | Mul => (
                         Vec::new(),
                         Self::get_wrapped_val(vcx, viper_val.downcast_ty(), res_ty).upcast_ty(),
                     ),
@@ -597,24 +656,6 @@ impl MirBuiltinEnc {
                             .mk_bin_op_expr(vir::BinOpKind::CmpLe, viper_val.downcast_ty(), max)
                             .downcast_ty::<vir::Bool>();
                         (vec![lower_bound, upper_bound], viper_val)
-                    }
-                    // Overflow is well defined as wrapping (implicit), but shifting by
-                    // more than the bit width (or less than 0) is undefined behavior.
-                    ShlUnchecked | ShrUnchecked => {
-                        let min = vcx.mk_int::<0>();
-                        // `arg2 >= 0`
-                        let lower_bound = vcx
-                            .mk_bin_op_expr(vir::BinOpKind::CmpGe, rhs.downcast_ty(), min)
-                            .downcast_ty::<vir::Bool>();
-                        let max = vcx.get_bit_width_int(l_ty.kind());
-                        // `arg2 < bit_width(arg1)`
-                        let upper_bound = vcx
-                            .mk_bin_op_expr(vir::BinOpKind::CmpLt, rhs.downcast_ty(), max)
-                            .downcast_ty::<vir::Bool>();
-                        (
-                            vec![lower_bound, upper_bound],
-                            Self::get_wrapped_val(vcx, viper_val.downcast_ty(), res_ty).upcast_ty(),
-                        )
                     }
                     // Could divide by zero or overflow if divisor is `-1`
                     Div | Rem => {
@@ -666,15 +707,19 @@ impl MirBuiltinEnc {
                         (pres, val)
                     }
                     // Cannot overflow and no undefined behavior
-                    BitXor | BitAnd | BitOr | Eq | Lt | Le | Ne | Ge | Gt | Offset => {
-                        (Vec::new(), viper_val)
-                    }
+                    Eq | Lt | Le | Ne | Ge | Gt | Offset => (Vec::new(), viper_val),
 
                     // these are handled in `handle_checked_bin_op`
                     AddWithOverflow | SubWithOverflow | MulWithOverflow => unreachable!(),
 
+                    // these are handled by `handle_bin_op_bitvec`
+                    Shl | Shr | ShlUnchecked | ShrUnchecked | BitXor | BitAnd | BitOr => {
+                        unreachable!()
+                    }
                     // this is handled separately, earlier
-                    Cmp => unreachable!(),
+                    Cmp => {
+                        unreachable!()
+                    }
                 }
             }
         }
