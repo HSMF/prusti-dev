@@ -3,7 +3,7 @@ use prusti_rustc_interface::{
     span::def_id::DefId,
 };
 use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
-use vir::{CallableIdn, CastType, FunctionIdn, HasType, MethodIdn};
+use vir::{CallableIdn, CastType, FunctionIdn, HasType, MethodIdn, VirCtxt};
 
 use crate::encoders::{
     ConstEnc, TyUseImpureEnc,
@@ -12,7 +12,7 @@ use crate::encoders::{
         RustTyDecomposition, TySpecifics,
         generics::{GParams, GenericParamsEnc},
         interpretation::{
-            bitvec::{BitVecDomain, BitVecEnc},
+            bitvec::{BitVecConversionEnc, BitVecDomain, BitVecEnc},
             float::FloatDomain,
         },
         pure::{TyPurePrimData, TyPurePrimDataKind},
@@ -498,19 +498,39 @@ impl MirBuiltinEnc {
         let rhs = vcx.mk_local_ex(rhs_decl);
         match prim_l_ty.kind {
             TyPurePrimDataKind::Native(prim_l_ty) => {
-                let lhs = (prim_l_ty.snap_to_prim)(lhs);
-                let rhs = (prim_r_ty.expect_native().snap_to_prim)(rhs);
-                let (pres, val) = if Self::needs_bitvec(op) {
-                    let bit_vec = deps.require_dep::<BitVecEnc>(match l_ty.kind() {
+                let lhs_prim = (prim_l_ty.snap_to_prim)(lhs);
+                let rhs_prim = (prim_r_ty.expect_native().snap_to_prim)(rhs);
+
+                let (pres, val) = if Self::needs_bitvec(op, l_ty) {
+                    let bit_vec_size = match l_ty.kind() {
                         ty::TyKind::Int(kind) => (*kind).into(),
                         ty::TyKind::Uint(kind) => (*kind).into(),
                         k => todo!("not int {k:?}"),
-                    })?;
-                    Self::handle_bin_op_bitvec(vcx, (lhs, l_ty), (rhs, r_ty), op, bit_vec)
+                    };
+                    let bit_vec = deps.require_dep::<BitVecEnc>(bit_vec_size)?;
+                    let conversion_lhs =
+                        deps.require_ref::<BitVecConversionEnc>((bit_vec_size, l_ty_task.ty))?;
+                    let conversion_rhs =
+                        deps.require_ref::<BitVecConversionEnc>((bit_vec_size, r_ty_task.ty))?;
+                    let conversion_res =
+                        deps.require_ref::<BitVecConversionEnc>((bit_vec_size, res_ty_task.ty))?;
+
+                    let pres =
+                        Self::bitvec_pre_condition(vcx, (lhs_prim, l_ty), (rhs_prim, r_ty), op);
+
+                    let lhs = (conversion_lhs.from_int)(lhs);
+                    let rhs = (conversion_rhs.from_int)(rhs);
+
+                    let val = Self::encode_bitvec(vcx, lhs, l_ty, rhs, op, bit_vec);
+                    let val = (conversion_res.to_int)(val);
+
+                    (pres, val)
                 } else {
-                    Self::handle_bin_op_native(vcx, lhs, rhs, res_ty, op, l_ty, r_ty)
+                    let (pres, val) =
+                        Self::handle_bin_op_native(vcx, lhs_prim, rhs_prim, res_ty, op, l_ty, r_ty);
+                    let val = (prim_res_ty.prim_to_snap)(val);
+                    (pres, val)
                 };
-                let val = (prim_res_ty.prim_to_snap)(val);
                 Ok(vcx.mk_function(
                     function,
                     (lhs_decl, rhs_decl),
@@ -528,43 +548,52 @@ impl MirBuiltinEnc {
         }
     }
 
-    fn needs_bitvec(op: mir::BinOp) -> bool {
+    fn needs_bitvec(op: mir::BinOp, l_ty: ty::Ty) -> bool {
         use mir::BinOp as B;
-        matches!(
-            op,
-            B::Shl | B::Shr | B::ShlUnchecked | B::ShrUnchecked | B::BitOr | B::BitAnd | B::BitXor
-        )
+        matches!(l_ty.kind(), ty::TyKind::Int(_) | ty::TyKind::Uint(_))
+            && matches!(
+                op,
+                B::Shl
+                    | B::Shr
+                    | B::ShlUnchecked
+                    | B::ShrUnchecked
+                    | B::BitOr
+                    | B::BitAnd
+                    | B::BitXor
+            )
     }
 
-    fn handle_bin_op_bitvec<'vir>(
+    /// lhs and rhs must be bitvecs. returns a bitvec.
+    /// preconditions and type conversion must be handled externally
+    fn encode_bitvec<'vir>(
         vcx: &'vir vir::VirCtxt<'vir>,
-        lhs: (vir::ExprPrim<'vir>, ty::Ty<'vir>),
-        rhs: (vir::ExprPrim<'vir>, ty::Ty<'vir>),
+        lhs: vir::ExprCSnap<'vir>,
+        l_ty: ty::Ty<'vir>,
+        mut rhs: vir::ExprCSnap<'vir>,
         op: mir::BinOp,
         bit_vec: BitVecDomain<'vir>,
-    ) -> (Vec<vir::ExprBool<'vir>>, vir::ExprPrim<'vir>) {
+    ) -> vir::ExprCSnap<'vir> {
         use mir::BinOp as B;
-        let (mut rhs, _r_ty) = rhs;
-        let (lhs, l_ty) = lhs;
-        if matches!(op, B::Shl | B::Shr) {
-            // RHS must be smaller than the bit width of the LHS, this is
-            // implicit in the `Shl` and `Shr` operators.
-            rhs = vcx.mk_bin_op_expr(
-                vir::BinOpKind::Mod,
-                rhs.downcast_ty(),
-                vcx.get_bit_width_int(l_ty.kind()),
-            );
+        if let B::Shl | B::Shr = op {
+            let mask = {
+                // inlined vcx.get_bit_width_int() but subtracting one
+                match VirCtxt::get_int_data(l_ty.kind()) {
+                    (u8::BITS, _) => vcx.mk_uint::<{ u8::BITS as u128 - 1 }>(),
+                    (u16::BITS, _) => vcx.mk_uint::<{ u16::BITS as u128 - 1 }>(),
+                    (u32::BITS, _) => vcx.mk_uint::<{ u32::BITS as u128 - 1 }>(),
+                    (u64::BITS, _) => vcx.mk_uint::<{ u64::BITS as u128 - 1 }>(),
+                    (u128::BITS, _) => vcx.mk_uint::<{ u128::BITS as u128 - 1 }>(),
+                    _ => unreachable!(),
+                }
+            };
+            rhs = (bit_vec.bit_and)(rhs, (bit_vec.from_int)(mask.upcast_ty()))
         }
-
         if let B::BitXor = op {
             // a ^ b == (a | b) & !(a & b)
-            let lhs = (bit_vec.from_int)(lhs);
-            let rhs = (bit_vec.from_int)(rhs);
             let left = (bit_vec.bit_or)(lhs, rhs);
             let right = (bit_vec.bit_not)((bit_vec.bit_and)(lhs, rhs));
             let ret = (bit_vec.bit_and)(left, right);
-            let ret = (bit_vec.to_int)(ret);
-            return (vec![], ret);
+            return ret;
         }
 
         let bitop = match op {
@@ -575,34 +604,37 @@ impl MirBuiltinEnc {
             _ => unreachable!(),
         };
 
-        let pres = match op {
+        (bitop)(lhs, rhs)
+    }
+
+    fn bitvec_pre_condition<'vir>(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        lhs: (vir::ExprPrim<'vir>, ty::Ty<'vir>),
+        rhs: (vir::ExprPrim<'vir>, ty::Ty<'vir>),
+        op: mir::BinOp,
+    ) -> Vec<vir::ExprBool<'vir>> {
+        use mir::BinOp as B;
+        match op {
             // Overflow is well defined as wrapping (implicit), but shifting by
             // more than the bit width (or less than 0) is undefined behavior.
             B::ShlUnchecked | B::ShrUnchecked => {
                 let min = vcx.mk_int::<0>();
                 // `arg2 >= 0`
                 let lower_bound = vcx
-                    .mk_bin_op_expr(vir::BinOpKind::CmpGe, rhs.downcast_ty(), min)
+                    .mk_bin_op_expr(vir::BinOpKind::CmpGe, rhs.0.downcast_ty(), min)
                     .downcast_ty::<vir::Bool>();
-                let max = vcx.get_bit_width_int(l_ty.kind());
+                let max = vcx.get_bit_width_int(lhs.1.kind());
                 // `arg2 < bit_width(arg1)`
                 let upper_bound = vcx
-                    .mk_bin_op_expr(vir::BinOpKind::CmpLt, rhs.downcast_ty(), max)
+                    .mk_bin_op_expr(vir::BinOpKind::CmpLt, rhs.0.downcast_ty(), max)
                     .downcast_ty::<vir::Bool>();
                 vec![lower_bound, upper_bound]
             }
             _ => vec![],
-        };
-
-        // convert from int, perform operation, convert back to int
-        let lhs = (bit_vec.from_int)(lhs);
-        let rhs = (bit_vec.from_int)(rhs);
-        let ret = (bitop)(lhs, rhs);
-        let ret = (bit_vec.to_int)(ret);
-
-        (pres, ret)
+        }
     }
 
+    #[allow(non_snake_case)]
     fn handle_bin_op_native<'vir>(
         vcx: &'vir vir::VirCtxt<'vir>,
         lhs: vir::ExprPrim<'vir>,
@@ -707,13 +739,15 @@ impl MirBuiltinEnc {
                         (pres, val)
                     }
                     // Cannot overflow and no undefined behavior
-                    Eq | Lt | Le | Ne | Ge | Gt | Offset => (Vec::new(), viper_val),
+                    Eq | Lt | Le | Ne | Ge | Gt | Offset | BitXor | BitAnd | BitOr => {
+                        (Vec::new(), viper_val)
+                    }
 
                     // these are handled in `handle_checked_bin_op`
                     AddWithOverflow | SubWithOverflow | MulWithOverflow => unreachable!(),
 
                     // these are handled by `handle_bin_op_bitvec`
-                    Shl | Shr | ShlUnchecked | ShrUnchecked | BitXor | BitAnd | BitOr => {
+                    Shl | Shr | ShlUnchecked | ShrUnchecked => {
                         unreachable!()
                     }
                     // this is handled separately, earlier
@@ -725,6 +759,7 @@ impl MirBuiltinEnc {
         }
     }
 
+    #[allow(non_snake_case)]
     fn handle_bin_op_float<'vir>(
         vcx: &'vir vir::VirCtxt<'vir>,
         lhs: vir::ExprCSnap<'vir>,
