@@ -14,7 +14,10 @@ use vir::{
     DomainIdnSnap, FunctionIdn, Type,
 };
 
-use crate::encoders::{Pure, ty::interpretation::real};
+use crate::encoders::{
+    Pure,
+    ty::interpretation::{bitvec::BitVecDomain, real},
+};
 
 use super::{
     RustTy, ViperTyDatas,
@@ -88,9 +91,17 @@ pub struct TyPurePrimData<'vir> {
     pub kind: TyPurePrimDataKind<'vir>,
 }
 
+/// Either using a viper-native int or a bitvector.
+#[derive(Debug, Clone, Copy)]
+pub struct TyPureIntegerData<'vir> {
+    pub native: TyPurePrimDataNative<'vir>,
+    pub bit_vec: &'vir BitVecDomain<'vir>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum TyPurePrimDataKind<'vir> {
     Native(TyPurePrimDataNative<'vir>),
+    Integer(TyPureIntegerData<'vir>),
     Float(FloatDomain<'vir>),
 }
 
@@ -104,6 +115,13 @@ impl<'vir> TyPurePrimData<'vir> {
     pub fn expect_native(&self) -> &TyPurePrimDataNative<'vir> {
         match &self.kind {
             TyPurePrimDataKind::Native(native) => native,
+            _ => panic!(),
+        }
+    }
+
+    pub fn expect_integer(&self) -> &TyPureIntegerData<'vir> {
+        match &self.kind {
+            TyPurePrimDataKind::Integer(int) => int,
             _ => panic!(),
         }
     }

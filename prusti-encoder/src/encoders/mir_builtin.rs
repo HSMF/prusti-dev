@@ -15,7 +15,7 @@ use crate::encoders::{
             bitvec::{BitVecConversionEnc, BitVecDomain, BitVecEnc},
             float::FloatDomain,
         },
-        pure::{TyPurePrimData, TyPurePrimDataKind},
+        pure::{TyPureIntegerData, TyPurePrimData, TyPurePrimDataKind},
         use_pure::TyUsePureEnc,
     },
 };
@@ -417,6 +417,7 @@ impl MirBuiltinEnc {
                         assert!(matches!(op, mir::UnOp::Neg));
                         (float.fp_neg)(snap_arg)
                     }
+                    TyPurePrimDataKind::Integer(..) => todo!(),
                 };
                 Ok(vcx.mk_function(function, (snap_arg_decl,), &[], &[], None, Some(body)))
             }
@@ -497,6 +498,20 @@ impl MirBuiltinEnc {
         let lhs = vcx.mk_local_ex(lhs_decl);
         let rhs = vcx.mk_local_ex(rhs_decl);
         match prim_l_ty.kind {
+            TyPurePrimDataKind::Integer(TyPureIntegerData {
+                native: prim_l_ty,
+                bit_vec,
+            }) => {
+                let TyPureIntegerData {
+                    native: prim_r_ty,
+                    bit_vec: r_bitvec,
+                } = prim_r_ty.expect_integer();
+                let lhs_prim = (prim_l_ty.snap_to_prim)(lhs);
+                let rhs_prim = (prim_r_ty.snap_to_prim)(rhs);
+if Self::needs_bitvec(op, l_ty) {}
+
+                todo!()
+            }
             TyPurePrimDataKind::Native(prim_l_ty) => {
                 let lhs_prim = (prim_l_ty.snap_to_prim)(lhs);
                 let rhs_prim = (prim_r_ty.expect_native().snap_to_prim)(rhs);

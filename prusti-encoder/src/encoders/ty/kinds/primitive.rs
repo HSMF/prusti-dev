@@ -1,7 +1,10 @@
 use crate::encoders::ty::{
     RustPrimitive,
     impure::{PredicateBuilder, TyImpureEnc, TyImpurePrimitive},
-    interpretation::float::ty_pure_float,
+    interpretation::{
+        float::ty_pure_float,
+        integer::{MaybeSigned, ty_pure_integer},
+    },
     pure::{
         DomainBuilder, TyPureEnc, TyPurePrimData, TyPurePrimDataKind, TyPurePrimDataNative,
         TyPurePrimitive,
@@ -33,6 +36,15 @@ pub(crate) fn ty_pure<'vir>(
         ty::TyKind::Float(float) => {
             let data = ty_pure_float(vcx, deps, builder, *float, cons_ident)?;
             TyPurePrimDataKind::Float(vcx.alloc(data))
+        }
+        ty::TyKind::Uint(uint) => {
+            let data =
+                ty_pure_integer(vcx, deps, builder, MaybeSigned::Unsigned(*uint), cons_ident)?;
+            TyPurePrimDataKind::Integer(data)
+        }
+        ty::TyKind::Int(int) => {
+            let data = ty_pure_integer(vcx, deps, builder, MaybeSigned::Signed(*int), cons_ident)?;
+            TyPurePrimDataKind::Integer(data)
         }
         _ => {
             let value_ident = builder.function("value", builder.self_type(), prim_type);
