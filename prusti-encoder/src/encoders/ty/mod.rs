@@ -12,6 +12,8 @@ mod data;
 mod rust_ty;
 pub mod interpretation;
 
+pub use data::TyData;
+
 pub use data::TySpecifics;
 pub use rust_ty::*;
 

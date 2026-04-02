@@ -58,6 +58,10 @@ pub struct BitVecDomain<'vir> {
     pub bit_not: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
     pub bit_or: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub bit_and: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+
+    pub bit_neg: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+
+    pub bit_neg_overflows: FunctionIdn<'vir, vir::CSnap, vir::Bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -163,6 +167,7 @@ impl TaskEncoder for BitVecEnc {
                     BitVecSize::BitVec128 => "(_ bv2int 128)",
                 },
             );
+
             let shl = builder.backend_func("shl", (self_type, self_type), self_type, "bvshl");
 
             let shr = builder.backend_func("shr", (self_type, self_type), self_type, "bvshr");
@@ -171,6 +176,10 @@ impl TaskEncoder for BitVecEnc {
                 builder.backend_func("bit_and", (self_type, self_type), self_type, "bvand");
 
             let bit_not = builder.backend_func("bit_not", self_type, self_type, "bvnot");
+
+            let bit_neg_overflows =
+                builder.backend_func("bit_neg_overflows", self_type, vir::TYPE_BOOL, "bvnego");
+            let bit_neg = builder.backend_func("bit_neg", self_type, self_type, "bvneg");
 
             let functions = &builder.functions;
 
@@ -215,6 +224,8 @@ impl TaskEncoder for BitVecEnc {
                     bit_not,
                     bit_or,
                     bit_and,
+                    bit_neg,
+                    bit_neg_overflows,
                 },
             ))
         })

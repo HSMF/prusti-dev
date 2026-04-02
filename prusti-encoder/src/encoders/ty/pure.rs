@@ -14,7 +14,10 @@ use vir::{
     DomainIdnSnap, FunctionIdn, Type,
 };
 
-use crate::encoders::{Pure, ty::interpretation::real};
+use crate::encoders::{
+    Pure,
+    ty::interpretation::{bitvec::BitVecDomain, real},
+};
 
 use super::{
     RustTy, ViperTyDatas,
@@ -92,6 +95,7 @@ pub struct TyPurePrimData<'vir> {
 pub enum TyPurePrimDataKind<'vir> {
     Native(TyPurePrimDataNative<'vir>),
     Float(FloatDomain<'vir>),
+    BitVec(&'vir BitVecDomain<'vir>),
 }
 
 #[derive(Debug, Clone, Copy)]

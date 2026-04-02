@@ -13,6 +13,7 @@ use crate::encoders::{
         generics::{GParams, GenericParamsEnc},
         interpretation::{
             bitvec::{BitVecConversionEnc, BitVecDomain, BitVecEnc},
+            encoding::{Encoded, EncodedTy},
             float::FloatDomain,
         },
         pure::{TyPurePrimData, TyPurePrimDataKind},
@@ -28,13 +29,42 @@ pub enum MirBuiltinEncError {
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum IntEncoding {
+    Native,
+    BitVec,
+}
+
+impl std::fmt::Display for IntEncoding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IntEncoding::Native => write!(f, "native"),
+            IntEncoding::BitVec => write!(f, "bitvec"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]
 pub enum MirBuiltinEncTask<'tcx> {
     Unsize(ty::Ty<'tcx>, ty::Ty<'tcx>, DefId),
     Len(ty::Ty<'tcx>),
-    UnOp(ty::Ty<'tcx>, mir::UnOp, ty::Ty<'tcx>),
-    BinOp(ty::Ty<'tcx>, mir::BinOp, ty::Ty<'tcx>, ty::Ty<'tcx>),
-    CheckedBinOp(ty::Ty<'tcx>, mir::BinOp, ty::Ty<'tcx>, ty::Ty<'tcx>),
+    UnOp {
+        res_ty: EncodedTy<'tcx>,
+        op: mir::UnOp,
+        operand_ty: EncodedTy<'tcx>,
+    },
+    BinOp {
+        res_ty: EncodedTy<'tcx>,
+        op: mir::BinOp,
+        l_ty: EncodedTy<'tcx>,
+        r_ty: EncodedTy<'tcx>,
+    },
+    CheckedBinOp {
+        res_ty: EncodedTy<'tcx>,
+        op: mir::BinOp,
+        l_ty: EncodedTy<'tcx>,
+        r_ty: EncodedTy<'tcx>,
+    },
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -118,15 +148,29 @@ impl TaskEncoder for MirBuiltinEnc {
                 MirBuiltinEncTask::Len(arg_ty) => {
                     functions.push(Self::handle_len(vcx, deps, *task_key, arg_ty)?)
                 }
-                MirBuiltinEncTask::UnOp(res_ty, op, operand_ty) => functions.push(
-                    Self::handle_un_op(vcx, deps, *task_key, op, operand_ty, res_ty)?,
-                ),
-                MirBuiltinEncTask::BinOp(res_ty, op, l_ty, r_ty) => functions.push(
-                    Self::handle_bin_op(vcx, deps, *task_key, res_ty, op, l_ty, r_ty)?,
-                ),
-                MirBuiltinEncTask::CheckedBinOp(res_ty, op, l_ty, r_ty) => functions.push(
-                    Self::handle_checked_bin_op(vcx, deps, *task_key, res_ty, op, l_ty, r_ty)?,
-                ),
+                MirBuiltinEncTask::UnOp {
+                    res_ty,
+                    op,
+                    operand_ty,
+                } => functions.push(Self::handle_un_op(
+                    vcx, deps, *task_key, op, operand_ty, res_ty,
+                )?),
+                MirBuiltinEncTask::BinOp {
+                    res_ty,
+                    op,
+                    l_ty,
+                    r_ty,
+                } => functions.push(Self::handle_bin_op(
+                    vcx, deps, *task_key, res_ty.ty, op, l_ty.ty, r_ty.ty,
+                )?),
+                MirBuiltinEncTask::CheckedBinOp {
+                    res_ty,
+                    op,
+                    l_ty,
+                    r_ty,
+                } => functions.push(Self::handle_checked_bin_op(
+                    vcx, deps, *task_key, res_ty.ty, op, l_ty.ty, r_ty.ty,
+                )?),
             }
             Ok((MirBuiltinEncOutput { functions, methods }, ()))
         })
@@ -375,23 +419,29 @@ impl MirBuiltinEnc {
         deps: &mut TaskEncoderDependencies<'vir, Self>,
         key: <Self as TaskEncoder>::TaskKey<'vir>,
         op: mir::UnOp,
-        operand_ty: ty::Ty<'vir>,
-        res_ty: ty::Ty<'vir>,
+        operand_ty: EncodedTy<'vir>,
+        res_ty: EncodedTy<'vir>,
     ) -> Result<vir::Function<'vir>, EncodeFullError<'vir, Self>> {
         match op {
             mir::UnOp::Neg | mir::UnOp::Not => {
-                assert_eq!(res_ty, operand_ty);
-                let ty_task = RustTyDecomposition::from_prim_ty(operand_ty);
-                let e_ty = deps.require_dep::<TyUsePureEnc>(ty_task)?;
+                assert_eq!(res_ty.ty, operand_ty.ty);
+                let e_ty = Encoded::from_encoded_ty(operand_ty, vcx, deps)?;
+                let r_ty = Encoded::from_encoded_ty(res_ty, vcx, deps)?;
 
-                let name =
-                    vir::vir_format_identifier!(vcx, "mir_unop_{op:?}_{}", int_name(operand_ty));
-                let e_ty_snap = e_ty.snapshot.downcast_ty();
-                let function = FunctionIdn::new(name, e_ty_snap, e_ty_snap);
+                let name = vir::vir_format_identifier!(
+                    vcx,
+                    "mir_unop_{op:?}_{}_{}_{}",
+                    int_name(operand_ty.ty),
+                    operand_ty.encoding,
+                    res_ty.encoding,
+                );
+                let e_ty_snap = e_ty.snapshot_type();
+                let r_ty_snap = r_ty.snapshot_type();
+                let function = FunctionIdn::new(name, e_ty_snap, r_ty_snap);
                 deps.emit_output_ref(key, MirBuiltinEncOutputRef::UnOp(function))?;
 
                 let snap_arg_decl = vcx.mk_local_decl("arg", e_ty_snap);
-                let prim_res_ty = e_ty.expect_primitive();
+                let prim_res_ty = e_ty.expect_primitive(vcx);
                 let snap_arg = vcx.mk_local_ex(snap_arg_decl);
                 let body = match prim_res_ty.kind {
                     TyPurePrimDataKind::Native(native) => {
@@ -403,8 +453,8 @@ impl MirBuiltinEnc {
                         // `CheckedUnOp`, instead the compiler puts an `TerminatorKind::Assert`
                         // before in debug mode. We should still produce the correct result in
                         // release mode, which the code under this branch does.
-                        if op == mir::UnOp::Neg && operand_ty.is_signed() {
-                            let bound = vcx.get_min_int(operand_ty.kind());
+                        if op == mir::UnOp::Neg && operand_ty.ty.is_signed() {
+                            let bound = vcx.get_min_int(operand_ty.ty.kind());
                             // `snap_to_prim(arg) == -iN::MIN`
                             let cond = vcx.mk_eq_expr(prim_arg.downcast_ty(), bound);
                             // `snap_to_prim(arg) == -iN::MIN ? arg :
@@ -417,15 +467,31 @@ impl MirBuiltinEnc {
                         assert!(matches!(op, mir::UnOp::Neg));
                         (float.fp_neg)(snap_arg)
                     }
+                    TyPurePrimDataKind::BitVec(bv) => match op {
+                        mir::UnOp::Neg => {
+                            let mut val = (bv.bit_neg)(snap_arg);
+                            if operand_ty.ty.is_signed() {
+                                val = vcx.mk_ternary_expr(
+                                    (bv.bit_neg_overflows)(snap_arg),
+                                    snap_arg,
+                                    val,
+                                );
+                            }
+                            val
+                        }
+                        mir::UnOp::Not => (bv.bit_not)(snap_arg),
+                        _ => unreachable!(),
+                    },
                 };
+                let body = e_ty.encode(r_ty, body);
                 Ok(vcx.mk_function(function, (snap_arg_decl,), &[], &[], None, Some(body)))
             }
             mir::UnOp::PtrMetadata => {
                 // TODO: the task key for this should not store the region
                 //   (e.g. len for &[bool] is currently &'3 [bool] depending on the callsite region)
-                let ty_task = RustTyDecomposition::from_ty(operand_ty, GParams::empty());
+                let ty_task = RustTyDecomposition::from_ty(operand_ty.ty, GParams::empty());
                 let operand_ref_pure = deps.require_dep::<TyUsePureEnc>(ty_task)?;
-                let ty_task = RustTyDecomposition::from_prim_ty(res_ty);
+                let ty_task = RustTyDecomposition::from_prim_ty(res_ty.ty);
                 let res_ty_enc = deps.require_dep::<TyUsePureEnc>(ty_task)?;
 
                 let name = vir::vir_format_identifier!(vcx, "mir_unop_{op:?}_{operand_ty:?}");
@@ -436,10 +502,12 @@ impl MirBuiltinEnc {
 
                 let snap_arg_decl = vcx.mk_local_decl("arg", operand_ty_snap);
 
-                let body = match operand_ty.peel_refs().kind() {
+                let body = match operand_ty.ty.peel_refs().kind() {
                     ty::TyKind::Slice(..) | ty::TyKind::Array(..) => {
-                        let ty_task =
-                            RustTyDecomposition::from_ty(operand_ty.peel_refs(), GParams::empty());
+                        let ty_task = RustTyDecomposition::from_ty(
+                            operand_ty.ty.peel_refs(),
+                            GParams::empty(),
+                        );
                         let operand_array_pure =
                             deps.require_dep::<TyUsePureEnc>(ty_task)?.expect_array();
                         let snap_arg = vcx.mk_local_ex(snap_arg_decl);
@@ -545,6 +613,7 @@ impl MirBuiltinEnc {
                 let body = Self::handle_bin_op_float(vcx, lhs, rhs, op, float, *prim_res_ty);
                 Ok(vcx.mk_function(function, (lhs_decl, rhs_decl), &[], &[], None, Some(body)))
             }
+            TyPurePrimDataKind::BitVec(bit_vec_domain) => todo!(),
         }
     }
 

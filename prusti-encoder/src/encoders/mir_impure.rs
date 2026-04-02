@@ -40,11 +40,13 @@ use vir::{CastType, CompType, LocalDeclData};
 
 use crate::encoders::{
     self, FunctionCallEnc, MirBuiltinEnc, MirBuiltinEncTask, TyUseImpureEnc, WandEnc, WandEncTask,
+    mir_builtin::IntEncoding,
     mir_fn::{CallTaskDescription, RustSignature},
     mir_shared::PureRvalueEnc,
     ty::{
         RustTyDecomposition,
         generics::{GParams, GenericParamsEnc},
+        interpretation::encoding::EncodedTy,
         use_impure::TyUseImpure,
         use_pure::{TyUsePure, TyUsePureEnc},
     },
@@ -446,11 +448,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .unwrap();
                 let ptr_metadata = self
                     .deps
-                    .require_ref::<MirBuiltinEnc>(MirBuiltinEncTask::UnOp(
-                        self.vcx.tcx().types.usize,
-                        mir::UnOp::PtrMetadata,
-                        rvalue_ty,
-                    ))?
+                    .require_ref::<MirBuiltinEnc>(MirBuiltinEncTask::UnOp {
+                        res_ty: EncodedTy::new(self.vcx.tcx().types.usize, IntEncoding::Native),
+                        op: mir::UnOp::PtrMetadata,
+                        operand_ty: EncodedTy::new(rvalue_ty, IntEncoding::Native),
+                    })?
                     .un_op()
                     .unwrap();
                 self.stmt(

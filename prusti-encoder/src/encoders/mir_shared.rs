@@ -3,7 +3,9 @@ use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 use vir::CastType;
 
 use crate::encoders::{
-    ConstEnc, MirBuiltinEnc, MirBuiltinEncTask, r#const::ConstEncTask, ty::use_pure::TyUsePure,
+    ConstEnc, MirBuiltinEnc, MirBuiltinEncTask,
+    r#const::ConstEncTask,
+    ty::{interpretation::encoding::EncodedTy, use_pure::TyUsePure},
 };
 use prusti_rustc_interface::{
     abi,
@@ -11,6 +13,8 @@ use prusti_rustc_interface::{
     middle::{mir, ty},
     span::def_id::DefId,
 };
+
+use super::mir_builtin::IntEncoding;
 
 #[allow(type_alias_bounds)]
 type ExprResult<'vir, Enc: PureRvalueEnc<'vir>> = Result<
@@ -127,9 +131,19 @@ pub(crate) trait PureRvalueEnc<'vir> {
         let r_ty = r.ty(self.body(), self.vcx().tcx());
         use crate::encoders::MirBuiltinEncTask::{BinOp, CheckedBinOp};
         let task = if op.is_overflowing() {
-            CheckedBinOp(rvalue_ty, op, l_ty, r_ty)
+            CheckedBinOp {
+                res_ty: EncodedTy::new(rvalue_ty, IntEncoding::Native),
+                op,
+                l_ty: EncodedTy::new(l_ty, IntEncoding::Native),
+                r_ty: EncodedTy::new(r_ty, IntEncoding::Native),
+            }
         } else {
-            BinOp(rvalue_ty, op, l_ty, r_ty)
+            BinOp {
+                res_ty: EncodedTy::new(rvalue_ty, IntEncoding::Native),
+                op,
+                l_ty: EncodedTy::new(l_ty, IntEncoding::Native),
+                r_ty: EncodedTy::new(r_ty, IntEncoding::Native),
+            }
         };
         let binop_function = self
             .deps()
@@ -162,13 +176,29 @@ pub(crate) trait PureRvalueEnc<'vir> {
     ) -> ExprResult<'vir, Self> {
         let encoded_operand = self.encode_operand_snap(operand, ctxt)?;
         let operand_ty = operand.ty(self.body(), self.vcx().tcx());
+        let encoding = if op == mir::UnOp::Not
+            && matches!(
+                operand_ty.kind(),
+                ty::TyKind::Int(..) | ty::TyKind::Uint(..)
+            ) {
+            IntEncoding::BitVec
+        } else {
+            IntEncoding::Native
+        };
+        let operand_ty = EncodedTy::new(operand_ty, encoding);
         let un_op_function = self
             .deps()
-            .require_ref::<MirBuiltinEnc>(MirBuiltinEncTask::UnOp(rvalue_ty, op, operand_ty))
+            .require_ref::<MirBuiltinEnc>(MirBuiltinEncTask::UnOp {
+                res_ty: EncodedTy::new(rvalue_ty, IntEncoding::Native),
+                op,
+                operand_ty,
+            })
             .unwrap()
             .un_op()
             .unwrap();
-        Ok(un_op_function.call()(encoded_operand.downcast_ty()).upcast_ty())
+        let encoded_operand =
+            operand_ty.cons(encoded_operand.downcast_ty(), self.vcx(), self.deps())?;
+        Ok(un_op_function.call()(encoded_operand).upcast_ty())
     }
 
     fn encode_aggregate_snap(
