@@ -58,6 +58,14 @@ pub struct BitVecDomain<'vir> {
     pub bit_not: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
     pub bit_or: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub bit_and: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    // a < b, signed
+    pub less_signed: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    // a < b, unsigned
+    pub less_unsigned: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    // a <= b, signed
+    pub less_eq_signed: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    // a <= b, unsigned
+    pub less_eq_unsigned: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -172,6 +180,21 @@ impl TaskEncoder for BitVecEnc {
 
             let bit_not = builder.backend_func("bit_not", self_type, self_type, "bvnot");
 
+            macro_rules! cmp {
+                ($id:ident = $interp:literal) => {
+                    let $id = builder.backend_func(
+                        stringify!($id),
+                        (self_type, self_type),
+                        vir::TYPE_BOOL,
+                        $interp,
+                    );
+                };
+            }
+            cmp!(bvslt = "bvslt");
+            cmp!(bvult = "bvult");
+            cmp!(bvsle = "bvsle");
+            cmp!(bvule = "bvule");
+
             let functions = &builder.functions;
 
             macro_rules! backend_pair {
@@ -215,6 +238,10 @@ impl TaskEncoder for BitVecEnc {
                     bit_not,
                     bit_or,
                     bit_and,
+                    less_signed: bvslt,
+                    less_unsigned: bvult,
+                    less_eq_signed: bvsle,
+                    less_eq_unsigned: bvule,
                 },
             ))
         })

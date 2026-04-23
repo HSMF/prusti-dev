@@ -98,6 +98,10 @@ pub enum TyPurePrimDataKind<'vir> {
 pub struct TyPurePrimDataNative<'vir> {
     /// Snapshot of self as argument. Returns Viper primitive value.
     pub snap_to_prim: FunctionIdn<'vir, vir::CSnap, vir::Prim>,
+    /// Snapshot of self as argument. Returns BitVec
+    pub snap_to_bitvec: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+    /// Bitvec to snapshot. Returns domain.
+    pub bitvec_to_snap: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
 }
 
 impl<'vir> TyPurePrimData<'vir> {

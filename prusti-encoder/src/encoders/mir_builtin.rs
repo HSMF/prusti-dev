@@ -12,7 +12,7 @@ use crate::encoders::{
         RustTyDecomposition, TySpecifics,
         generics::{GParams, GenericParamsEnc},
         interpretation::{
-            bitvec::{BitVecConversionEnc, BitVecDomain, BitVecEnc},
+            bitvec::{BitVecDomain, BitVecEnc},
             float::FloatDomain,
         },
         pure::{TyPurePrimData, TyPurePrimDataKind},
@@ -508,21 +508,15 @@ impl MirBuiltinEnc {
                         k => todo!("not int {k:?}"),
                     };
                     let bit_vec = deps.require_dep::<BitVecEnc>(bit_vec_size)?;
-                    let conversion_lhs =
-                        deps.require_ref::<BitVecConversionEnc>((bit_vec_size, l_ty_task.ty))?;
-                    let conversion_rhs =
-                        deps.require_ref::<BitVecConversionEnc>((bit_vec_size, r_ty_task.ty))?;
-                    let conversion_res =
-                        deps.require_ref::<BitVecConversionEnc>((bit_vec_size, res_ty_task.ty))?;
 
                     let pres =
                         Self::bitvec_pre_condition(vcx, (lhs_prim, l_ty), (rhs_prim, r_ty), op);
 
-                    let lhs = (conversion_lhs.from_int)(lhs);
-                    let rhs = (conversion_rhs.from_int)(rhs);
+                    let lhs = (prim_l_ty.snap_to_bitvec)(lhs);
+                    let rhs = (prim_r_ty.expect_native().snap_to_bitvec)(rhs);
 
                     let val = Self::encode_bitvec(vcx, lhs, l_ty, rhs, op, bit_vec);
-                    let val = (conversion_res.to_int)(val);
+                    let val = (prim_res_ty.expect_native().bitvec_to_snap)(val);
 
                     (pres, val)
                 } else {
