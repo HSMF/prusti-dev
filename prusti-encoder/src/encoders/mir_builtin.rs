@@ -3,7 +3,7 @@ use prusti_rustc_interface::{
     span::def_id::DefId,
 };
 use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
-use vir::{CallableIdn, CastType, FunctionIdn, HasType, MethodIdn, VirCtxt};
+use vir::{CallableIdn, CastType, ExprBool, ExprCSnap, FunctionIdn, HasType, MethodIdn, VirCtxt};
 
 use crate::encoders::{
     ConstEnc, TyUseImpureEnc,
@@ -11,16 +11,18 @@ use crate::encoders::{
     ty::{
         RustTyDecomposition, TySpecifics,
         generics::{GParams, GenericParamsEnc},
-        interpretation::{
-            bitvec::{BitVecConversionEnc, BitVecDomain, BitVecEnc},
-            float::FloatDomain,
-        },
+        interpretation::{bitvec::BitVecDomain, float::FloatDomain},
         pure::{TyPurePrimData, TyPurePrimDataKind},
         use_pure::TyUsePureEnc,
     },
 };
 
 pub struct MirBuiltinEnc;
+
+enum SnapOrBool<'vir> {
+    Snap(ExprCSnap<'vir>),
+    Bool(ExprBool<'vir>),
+}
 
 #[derive(Clone, Debug)]
 pub enum MirBuiltinEncError {
@@ -417,6 +419,7 @@ impl MirBuiltinEnc {
                         assert!(matches!(op, mir::UnOp::Neg));
                         (float.fp_neg)(snap_arg)
                     }
+                    _ => todo!(),
                 };
                 Ok(vcx.mk_function(function, (snap_arg_decl,), &[], &[], None, Some(body)))
             }
@@ -501,36 +504,9 @@ impl MirBuiltinEnc {
                 let lhs_prim = (prim_l_ty.snap_to_prim)(lhs);
                 let rhs_prim = (prim_r_ty.expect_native().snap_to_prim)(rhs);
 
-                let (pres, val) = if Self::needs_bitvec(op, l_ty) {
-                    let bit_vec_size = match l_ty.kind() {
-                        ty::TyKind::Int(kind) => (*kind).into(),
-                        ty::TyKind::Uint(kind) => (*kind).into(),
-                        k => todo!("not int {k:?}"),
-                    };
-                    let bit_vec = deps.require_dep::<BitVecEnc>(bit_vec_size)?;
-                    let conversion_lhs =
-                        deps.require_ref::<BitVecConversionEnc>((bit_vec_size, l_ty_task.ty))?;
-                    let conversion_rhs =
-                        deps.require_ref::<BitVecConversionEnc>((bit_vec_size, r_ty_task.ty))?;
-                    let conversion_res =
-                        deps.require_ref::<BitVecConversionEnc>((bit_vec_size, res_ty_task.ty))?;
-
-                    let pres =
-                        Self::bitvec_pre_condition(vcx, (lhs_prim, l_ty), (rhs_prim, r_ty), op);
-
-                    let lhs = (conversion_lhs.from_int)(lhs);
-                    let rhs = (conversion_rhs.from_int)(rhs);
-
-                    let val = Self::encode_bitvec(vcx, lhs, l_ty, rhs, op, bit_vec);
-                    let val = (conversion_res.to_int)(val);
-
-                    (pres, val)
-                } else {
-                    let (pres, val) =
-                        Self::handle_bin_op_native(vcx, lhs_prim, rhs_prim, res_ty, op, l_ty, r_ty);
-                    let val = (prim_res_ty.prim_to_snap)(val);
-                    (pres, val)
-                };
+                let (pres, val) =
+                    Self::handle_bin_op_native(vcx, lhs_prim, rhs_prim, res_ty, op, l_ty, r_ty);
+                let val = (prim_res_ty.prim_to_snap)(val);
                 Ok(vcx.mk_function(
                     function,
                     (lhs_decl, rhs_decl),
@@ -544,6 +520,35 @@ impl MirBuiltinEnc {
                 assert!(matches!(prim_r_ty.kind, TyPurePrimDataKind::Float(_)));
                 let body = Self::handle_bin_op_float(vcx, lhs, rhs, op, float, *prim_res_ty);
                 Ok(vcx.mk_function(function, (lhs_decl, rhs_decl), &[], &[], None, Some(body)))
+            }
+            TyPurePrimDataKind::BitVec(bit_vec) => {
+                let lhs_bv = bit_vec.value.call()(lhs);
+                let rhs_bv = prim_r_ty.expect_bitvec().value.call()(rhs);
+
+                let (pres, val) = Self::handle_bin_op_bitvec(
+                    vcx,
+                    bit_vec.bit_vec,
+                    lhs_bv,
+                    rhs_bv,
+                    op,
+                    l_ty,
+                    r_ty,
+                );
+
+                dbg!(op);
+                let val = match val {
+                    SnapOrBool::Snap(val) => (prim_res_ty.expect_bitvec().cons)(val),
+                    SnapOrBool::Bool(val) => (prim_res_ty.prim_to_snap)(val.upcast_ty()),
+                };
+
+                Ok(vcx.mk_function(
+                    function,
+                    (lhs_decl, rhs_decl),
+                    vcx.alloc_slice(&pres),
+                    &[],
+                    None,
+                    Some(val),
+                ))
             }
         }
     }
@@ -586,21 +591,21 @@ impl MirBuiltinEnc {
                     _ => unreachable!(),
                 }
             };
-            rhs = (bit_vec.bit_and)(rhs, (bit_vec.from_int)(mask.upcast_ty()))
+            rhs = (bit_vec.and)(rhs, (bit_vec.from_int)(mask.upcast_ty()))
         }
         if let B::BitXor = op {
             // a ^ b == (a | b) & !(a & b)
-            let left = (bit_vec.bit_or)(lhs, rhs);
-            let right = (bit_vec.bit_not)((bit_vec.bit_and)(lhs, rhs));
-            let ret = (bit_vec.bit_and)(left, right);
+            let left = (bit_vec.or)(lhs, rhs);
+            let right = (bit_vec.not)((bit_vec.and)(lhs, rhs));
+            let ret = (bit_vec.and)(left, right);
             return ret;
         }
 
         let bitop = match op {
             B::Shl | B::ShlUnchecked => bit_vec.shl,
             B::Shr | B::ShrUnchecked => bit_vec.shr,
-            B::BitOr => bit_vec.bit_or,
-            B::BitAnd => bit_vec.bit_and,
+            B::BitOr => bit_vec.or,
+            B::BitAnd => bit_vec.and,
             _ => unreachable!(),
         };
 
@@ -860,6 +865,7 @@ impl MirBuiltinEnc {
 
         // The result of a checked add will always be `(T, bool)`, get the `T`
         // type
+        assert_eq!(res_ty.tuple_fields().len(), 2);
         let rvalue_pure_ty = res_ty.tuple_fields()[0];
         let bool_ty = res_ty.tuple_fields()[1];
         assert!(bool_ty.is_bool());
@@ -868,7 +874,6 @@ impl MirBuiltinEnc {
         let e_rvalue_pure_ty = deps.require_dep::<TyUsePureEnc>(rvalue_pure_ty_task)?;
         let e_rvalue_pure_ty = e_rvalue_pure_ty.expect_primitive();
         assert_eq!(vir::TYPE_INT.upcast_ty(), e_rvalue_pure_ty.prim_type);
-        let prim_type = e_rvalue_pure_ty.prim_type.downcast_ty::<vir::Int>();
         let bool_ty_task = RustTyDecomposition::from_prim_ty(bool_ty);
         let e_bool = deps.require_dep::<TyUsePureEnc>(bool_ty_task)?;
         let bool_cons = e_bool
@@ -877,41 +882,25 @@ impl MirBuiltinEnc {
             .cast_args::<vir::Bool>(vir::TYPE_BOOL);
 
         // Unbounded value
-        let val_exp = vcx
-            .mk_bin_op_expr(
-                vir::BinOpKind::from(op),
-                (e_l_ty.expect_native().snap_to_prim)(vcx.mk_local_ex(lhs_decl)),
-                (e_r_ty.expect_native().snap_to_prim)(vcx.mk_local_ex(rhs_decl)),
-            )
-            .downcast_ty();
-        let val_decl = vcx.mk_local_decl("val", prim_type);
-        let val = vcx.mk_local_ex(val_decl);
-        // Wrapped value
-        let wrapped_val_decl = vcx.mk_local_decl("wrapped_val", prim_type);
-        let wrapped_val_exp = Self::get_wrapped_val(vcx, val, rvalue_pure_ty);
-        let wrapped_val = vcx.mk_local_ex(wrapped_val_decl);
-        let wrapped_val_snap = (e_rvalue_pure_ty.prim_to_snap)(wrapped_val.upcast_ty());
+        let e_l_ty = e_l_ty.expect_primitive().expect_bitvec();
+        let (overflowed, val_exp) = Self::encode_arith_bitvec(
+            e_l_ty.bit_vec,
+            (e_l_ty.value.call())(vcx.mk_local_ex(lhs_decl)),
+            (e_r_ty.expect_primitive().expect_bitvec().value.call())(vcx.mk_local_ex(rhs_decl)),
+            op,
+            l_ty,
+        );
+        let val_exp = (e_rvalue_pure_ty.expect_bitvec().cons)(val_exp);
+
         // Overflowed?
-        let overflowed = vcx
-            .mk_bin_op_expr(vir::BinOpKind::CmpNe, wrapped_val, val)
-            .downcast_ty();
         let overflowed_snap = bool_cons(overflowed);
         // `tuple(prim_to_snap(wrapped_val), wrapped_val != val)`
-        let tuple = e_res_ty.expect_structlike().field_snaps_to_snap(vec![
-            wrapped_val_snap.upcast_ty(),
-            overflowed_snap.upcast_ty(),
-        ]);
+        let tuple = e_res_ty
+            .expect_structlike()
+            .field_snaps_to_snap(vec![val_exp.upcast_ty(), overflowed_snap.upcast_ty()]);
         // `let wrapped_val == (val ..) in $tuple`
-        let inner_let = vcx.mk_let_expr(wrapped_val_decl, wrapped_val_exp, tuple);
 
-        Ok(vcx.mk_function(
-            function,
-            (lhs_decl, rhs_decl),
-            &[],
-            &[],
-            None,
-            Some(vcx.mk_let_expr(val_decl, val_exp, inner_let)),
-        ))
+        Ok(vcx.mk_function(function, (lhs_decl, rhs_decl), &[], &[], None, Some(tuple)))
     }
 
     /// Wrap the value in the range of the type, e.g. `uN` is wrapped in the
@@ -939,5 +928,83 @@ impl MirBuiltinEnc {
                 .downcast_ty();
         }
         exp
+    }
+
+    /// op must be arithmetic. returns (does_overflow, value)
+    fn encode_arith_bitvec<'vir>(
+        bit_vec: &BitVecDomain<'vir>,
+        lhs: &'vir vir::ExprGenData<'vir, (), !, vir::CSnap>,
+        rhs: &'vir vir::ExprGenData<'vir, (), !, vir::CSnap>,
+        op: mir::BinOp,
+        l_ty: ty::Ty<'vir>,
+    ) -> (ExprBool<'vir>, ExprCSnap<'vir>) {
+        let is_unsigned = matches!(l_ty.kind(), ty::TyKind::Uint(..));
+        let (binop, overflow_op) = match op {
+            mir::BinOp::Add | mir::BinOp::AddWithOverflow => (
+                bit_vec.add,
+                if is_unsigned {
+                    bit_vec.uaddo
+                } else {
+                    bit_vec.saddo
+                },
+            ),
+            mir::BinOp::Sub | mir::BinOp::SubWithOverflow => (
+                bit_vec.sub,
+                if is_unsigned {
+                    bit_vec.usubo
+                } else {
+                    bit_vec.ssubo
+                },
+            ),
+            mir::BinOp::Mul | mir::BinOp::MulWithOverflow => (bit_vec.mul, bit_vec.mulo),
+            _ => panic!("not an arithmetic op {op:?}"),
+        };
+
+        (overflow_op(lhs, rhs), binop(lhs, rhs))
+    }
+
+    fn handle_bin_op_bitvec<'vir>(
+        vcx: &'vir VirCtxt<'vir>,
+        bit_vec: &BitVecDomain<'vir>,
+        lhs: &'vir vir::ExprGenData<'vir, (), !, vir::CSnap>,
+        rhs: &'vir vir::ExprGenData<'vir, (), !, vir::CSnap>,
+        op: mir::BinOp,
+        l_ty: ty::Ty<'vir>,
+        _r_ty: ty::Ty<'vir>,
+    ) -> (Vec<vir::ExprBool<'vir>>, SnapOrBool<'vir>) {
+        use SnapOrBool::{Bool, Snap};
+        use mir::BinOp as B;
+        match op {
+            B::Lt | B::Le | B::Ge | B::Gt => {
+                let val = match (op, l_ty.kind()) {
+                    (B::Lt, ty::TyKind::Uint(..)) => (bit_vec.ult)(lhs, rhs),
+                    (B::Lt, ty::TyKind::Int(..)) => (bit_vec.slt)(lhs, rhs),
+                    (B::Gt, ty::TyKind::Uint(..)) => (bit_vec.ult)(rhs, lhs),
+                    (B::Gt, ty::TyKind::Int(..)) => (bit_vec.slt)(rhs, lhs),
+                    (B::Le, ty::TyKind::Uint(..)) => (bit_vec.ule)(lhs, rhs),
+                    (B::Le, ty::TyKind::Int(..)) => (bit_vec.sle)(lhs, rhs),
+                    (B::Ge, ty::TyKind::Uint(..)) => (bit_vec.ule)(rhs, lhs),
+                    (B::Ge, ty::TyKind::Int(..)) => (bit_vec.sle)(rhs, lhs),
+                    _ => unreachable!("{:?}", l_ty.kind()),
+                };
+                (vec![], Bool(val))
+            }
+
+            B::Eq | B::Ne => {
+                let op_kind = vir::BinOpKind::from(op);
+                let viper_val = vcx
+                    .mk_bin_op_expr_inner(op_kind, lhs.as_dyn(), rhs.as_dyn())
+                    .downcast_ty();
+                (vec![], Bool(viper_val))
+            }
+            B::Add => (vec![], Snap((bit_vec.add)(lhs, rhs))),
+            B::Sub => (vec![], Snap((bit_vec.sub)(lhs, rhs))),
+            B::Mul => (vec![], Snap((bit_vec.mul)(lhs, rhs))),
+
+            B::BitOr => (vec![], Snap((bit_vec.or)(lhs, rhs))),
+            B::BitAnd => (vec![], Snap((bit_vec.and)(lhs, rhs))),
+
+            _ => todo!("unhandled op {op:?}"),
+        }
     }
 }

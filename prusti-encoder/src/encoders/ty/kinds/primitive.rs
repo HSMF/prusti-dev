@@ -1,10 +1,13 @@
 use crate::encoders::ty::{
     RustPrimitive,
     impure::{PredicateBuilder, TyImpureEnc, TyImpurePrimitive},
-    interpretation::float::ty_pure_float,
+    interpretation::{
+        bitvec::{BitVecEnc, BitVecSize},
+        float::ty_pure_float,
+    },
     pure::{
-        DomainBuilder, TyPureEnc, TyPurePrimData, TyPurePrimDataKind, TyPurePrimDataNative,
-        TyPurePrimitive,
+        TyPureBuilder, TyPureEnc, TyPurePrimData, TyPurePrimDataBitVec, TyPurePrimDataKind,
+        TyPurePrimDataNative, TyPurePrimitive,
     },
 };
 use prusti_rustc_interface::middle::ty;
@@ -15,7 +18,7 @@ pub(crate) fn ty_pure<'vir>(
     vcx: &'vir VirCtxt<'vir>,
     data: &RustPrimitive<'vir>,
     deps: &mut TaskEncoderDependencies<'vir, TyPureEnc>,
-    builder: &mut DomainBuilder<'vir>,
+    builder: &mut TyPureBuilder<'vir>,
 ) -> Result<TyPurePrimitive<'vir>, EncodeFullError<'vir, TyPureEnc>> {
     let ty = data;
     let ty_kind = ty.kind();
@@ -27,52 +30,74 @@ pub(crate) fn ty_pure<'vir>(
         _ => unreachable!(),
     };
 
-    let cons_ident = builder.function("cons", prim_type, builder.self_type());
-
-    let kind = match ty_kind {
+    match ty_kind {
         ty::TyKind::Float(float) => {
+            let builder = builder.set_domain_builder();
+            let cons_ident = builder.function("cons", prim_type, builder.self_type());
             let data = ty_pure_float(vcx, deps, builder, *float, cons_ident)?;
-            TyPurePrimDataKind::Float(vcx.alloc(data))
+            Ok(TyPurePrimData {
+                prim_type,
+                prim_to_snap: cons_ident,
+                kind: TyPurePrimDataKind::Float(vcx.alloc(data)),
+            })
+        }
+        ty::TyKind::Int(_) | ty::TyKind::Uint(_) => {
+            let builder = builder.set_adt_builder();
+            let bit_vec_size = match ty_kind {
+                ty::TyKind::Int(kind) => (*kind).into(),
+                ty::TyKind::Uint(kind) => (*kind).into(),
+                ty::TyKind::Bool => BitVecSize::BitVec8,
+                k => todo!("not int {k:?}"),
+            };
+            let bit_vec = deps.require_dep::<BitVecEnc>(bit_vec_size)?;
+            let bit_vec_type = (bit_vec.domain)();
+            let (cons_bv, destructor) = builder.constructor::<vir::CSnap>("", bit_vec_type, None);
+
+            let int = vir::TYPE_INT.upcast_ty();
+            let arg_decl = vcx.mk_local_decl("arg1", int);
+            let arg = vcx.mk_local_ex(arg_decl);
+            let cons_ident = builder.function(
+                "cons_prim",
+                int,
+                builder.self_type(),
+                (arg_decl,),
+                &[],
+                &[],
+                Some(cons_bv((bit_vec.from_int)(arg))),
+            );
+
+            Ok(TyPurePrimData {
+                prim_type,
+                prim_to_snap: cons_ident,
+                kind: TyPurePrimDataKind::BitVec(TyPurePrimDataBitVec {
+                    bit_vec: vcx.alloc(bit_vec),
+                    value: destructor.first().unwrap().downcast_ty(),
+                    cons: vcx.alloc(cons_bv),
+                }),
+            })
         }
         _ => {
+            let builder = builder.set_domain_builder();
+            let cons_ident = builder.function("cons", prim_type, builder.self_type());
             let value_ident = builder.function("value", builder.self_type(), prim_type);
 
             builder.axiom("cons", vir::expr! {
                 forall s: [builder.self_type()] :: {[value_ident](s)} ([cons_ident]([value_ident](s))) == (s)
             });
 
-            match ty_kind {
-                ty::TyKind::Int(_) | ty::TyKind::Uint(_) => {
-                    let min = builder.vcx.get_min_int(ty_kind);
-                    let max = builder.vcx.get_max_int(ty_kind);
-                    builder.axiom("bounds", vir::expr! {
-                        forall s: [builder.self_type()] :: {[value_ident](s)} (([min]) <= (([value_ident](s)) as Int)) && ((([value_ident](s)) as Int) <= ([max]))
-                    });
-                    builder.axiom(
-                        "value",
-                        vir::expr! {
-                            forall value: [prim_type] :: {[cons_ident](value)}
-                                ((([min]) <= ((value) as Int)) && (((value) as Int) <= ([max])))
-                                    ==> (([value_ident]([cons_ident](value))) == (value))
-                        },
-                    );
-                }
-                _ => {
-                    builder.axiom("value", vir::expr! {
+            builder.axiom("value", vir::expr! {
                         forall value: [prim_type] :: {[cons_ident](value)} ([value_ident]([cons_ident](value))) == (value)
                     });
-                }
-            };
-            TyPurePrimDataKind::Native(TyPurePrimDataNative {
-                snap_to_prim: value_ident,
+
+            Ok(TyPurePrimData {
+                prim_type,
+                prim_to_snap: cons_ident,
+                kind: TyPurePrimDataKind::Native(TyPurePrimDataNative {
+                    snap_to_prim: value_ident,
+                }),
             })
         }
-    };
-    Ok(TyPurePrimData {
-        prim_type,
-        prim_to_snap: cons_ident,
-        kind,
-    })
+    }
 }
 
 pub(crate) fn ty_impure<'vir>(

@@ -1,7 +1,7 @@
 use task_encoder::{OutputRefAny, TaskEncoder};
 use vir::{
-    Arity, BackendInterpretationPair, CastType, CompType, DomainFunctionData, DomainGenData,
-    DomainIdnCSnap, FunctionIdn, Type, VirCtxt,
+    Arity, BackendInterpretationPair, CastType, CompType, DomainAxiomData, DomainAxiomGenData,
+    DomainFunctionData, DomainGenData, DomainIdnCSnap, FunctionIdn, Type, VirCtxt,
 };
 
 use crate::encoders::ty::{RustTy, pure::TyPureEnc};
@@ -24,6 +24,18 @@ impl BitVecSize {
             64 => Self::BitVec64,
             128 => Self::BitVec128,
             _ => panic!("illegal bit width {i}"),
+        }
+    }
+}
+
+impl From<&BitVecSize> for u8 {
+    fn from(value: &BitVecSize) -> Self {
+        match value {
+            BitVecSize::BitVec8 => 8,
+            BitVecSize::BitVec16 => 16,
+            BitVecSize::BitVec32 => 32,
+            BitVecSize::BitVec64 => 64,
+            BitVecSize::BitVec128 => 128,
         }
     }
 }
@@ -55,9 +67,27 @@ pub struct BitVecDomain<'vir> {
     pub to_int: FunctionIdn<'vir, vir::CSnap, vir::Prim>,
     pub shl: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub shr: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
-    pub bit_not: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
-    pub bit_or: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
-    pub bit_and: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub not: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+    pub or: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub and: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub neg: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+    pub add: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub sub: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub mul: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub nego: FunctionIdn<'vir, vir::CSnap, vir::Bool>,
+    pub uaddo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub saddo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub usubo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub ssubo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub mulo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub udiv: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub urem: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub sdiv: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub srem: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub slt: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub ult: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub sle: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub ule: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -75,10 +105,10 @@ struct Builder<'vir> {
     domain_name: &'static str,
     vcx: &'vir VirCtxt<'vir>,
     functions: Vec<&'vir DomainFunctionData<'vir>>,
+    axioms: Vec<&'vir DomainAxiomGenData<'vir, (), !>>,
 }
 
 impl<'vir> Builder<'vir> {
-    // TODO: instead of returning the function data, push it into a internal (small) vec
     fn backend_func<A: Arity, T: CompType>(
         &mut self,
         name: &str,
@@ -91,6 +121,25 @@ impl<'vir> Builder<'vir> {
         let function = self
             .vcx
             .mk_domain_function(ident, false, Some(interpretation));
+        self.functions.push(function);
+        ident
+    }
+
+    fn axiom(&mut self, name: &str, expr: vir::ExprBool<'vir>) {
+        let name = vir::vir_format!(self.vcx, "{}_ax_{name}", self.domain_name);
+        let axiom = self.vcx.alloc(DomainAxiomData { name, expr });
+        self.axioms.push(axiom);
+    }
+
+    fn function<A: Arity, T: CompType>(
+        &mut self,
+        name: &str,
+        args: A::Tys<'vir>,
+        ret: Type<'vir, T>,
+    ) -> FunctionIdn<'vir, A, T> {
+        let name = vir::vir_format!(self.vcx, "{}_{name}", self.domain_name);
+        let ident = FunctionIdn::new(vir::ViperIdent::new(name), args, ret);
+        let function = self.vcx.mk_domain_function(ident, false, None);
         self.functions.push(function);
         ident
     }
@@ -138,6 +187,7 @@ impl TaskEncoder for BitVecEnc {
                 domain_name,
                 vcx,
                 functions: vec![],
+                axioms: vec![],
             };
             let from_int = builder.backend_func(
                 "from_int",
@@ -163,14 +213,64 @@ impl TaskEncoder for BitVecEnc {
                     BitVecSize::BitVec128 => "(_ bv2int 128)",
                 },
             );
-            let shl = builder.backend_func("shl", (self_type, self_type), self_type, "bvshl");
 
-            let shr = builder.backend_func("shr", (self_type, self_type), self_type, "bvshr");
-            let bit_or = builder.backend_func("bit_or", (self_type, self_type), self_type, "bvor");
-            let bit_and =
-                builder.backend_func("bit_and", (self_type, self_type), self_type, "bvand");
+            macro_rules! op {
+                ($name:ident($($args:expr),*) -> $ret:expr) => {
+                    let viper_name = stringify!($name);
+                    let interp_name = concat!("bv", stringify!($name));
+                    let $name = builder.backend_func(
+                        viper_name,
+                        ($($args),*),
+                        $ret,
+                        interp_name,
+                    );
+                };
+            }
 
-            let bit_not = builder.backend_func("bit_not", self_type, self_type, "bvnot");
+            // bit ops
+            op!(shl(self_type, self_type) -> self_type);
+            op!(shr(self_type, self_type) -> self_type);
+            op!(or(self_type, self_type) -> self_type);
+            op!(and(self_type, self_type) -> self_type);
+            op!(not(self_type) -> self_type);
+            // arithmetic ops
+            op!(neg(self_type) -> self_type);
+            op!(add(self_type, self_type) -> self_type);
+            op!(mul(self_type, self_type) -> self_type);
+            op!(udiv(self_type, self_type) -> self_type);
+            op!(urem(self_type, self_type) -> self_type);
+            op!(sdiv(self_type, self_type) -> self_type);
+            op!(srem(self_type, self_type) -> self_type);
+            op!(slt(self_type, self_type) -> vir::TYPE_BOOL);
+            op!(sle(self_type, self_type) -> vir::TYPE_BOOL);
+            op!(ult(self_type, self_type) -> vir::TYPE_BOOL);
+            op!(ule(self_type, self_type) -> vir::TYPE_BOOL);
+
+            // overflow checks
+            op!(nego(self_type) -> vir::TYPE_BOOL);
+            op!(saddo(self_type, self_type) -> vir::TYPE_BOOL);
+            op!(uaddo(self_type, self_type) -> vir::TYPE_BOOL);
+            op!(mulo(self_type, self_type) -> vir::TYPE_BOOL);
+
+            // SMT-LIB doesn't give us those
+            let sub = builder.function("sub", (self_type, self_type), self_type);
+            builder.axiom(
+                "sub",
+                vir::expr! {
+                    forall x: [self_type], y: [self_type] :: { [sub](x, y) }
+                    ([sub](x, y)) == ([add](x, [neg](y)))
+                },
+            );
+            let usubo = builder.function("usubo", (self_type, self_type), vir::TYPE_BOOL);
+            builder.axiom(
+                "usubo",
+                vir::expr! {
+                    forall x: [self_type], y: [self_type] :: { [usubo](x, y) }
+                    ([usubo](x, y)) == ( (x) < (y) )
+                },
+            );
+            let ssubo = builder.function("ssubo", (self_type, self_type), vir::TYPE_BOOL);
+            // TODO: interpret ssubo
 
             let functions = &builder.functions;
 
@@ -212,9 +312,27 @@ impl TaskEncoder for BitVecEnc {
                     to_int,
                     shl,
                     shr,
-                    bit_not,
-                    bit_or,
-                    bit_and,
+                    not,
+                    or,
+                    and,
+                    neg,
+                    add,
+                    sub,
+                    mul,
+                    nego,
+                    saddo,
+                    uaddo,
+                    ssubo,
+                    usubo,
+                    mulo,
+                    udiv,
+                    urem,
+                    sdiv,
+                    srem,
+                    slt,
+                    ult,
+                    sle,
+                    ule,
                 },
             ))
         })

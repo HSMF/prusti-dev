@@ -10,11 +10,14 @@ use prusti_rustc_interface::{
 };
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{
-    AdtDestructor, Arity, BackendInterpretationPair, CastType, CompType, DomainAxiomData,
-    DomainIdnSnap, FunctionIdn, Type,
+    AdtDestructor, AdtDestructorData, Arity, BackendInterpretationPair, CastType, CompType,
+    DomainAxiomData, DomainIdnSnap, FunctionIdn, Type,
 };
 
-use crate::encoders::{Pure, ty::interpretation::real};
+use crate::encoders::{
+    Pure,
+    ty::interpretation::{bitvec::BitVecDomain, real},
+};
 
 use super::{
     RustTy, ViperTyDatas,
@@ -89,8 +92,17 @@ pub struct TyPurePrimData<'vir> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct TyPurePrimDataBitVec<'vir> {
+    pub bit_vec: &'vir BitVecDomain<'vir>,
+    /// BitVec -> adt
+    pub cons: &'vir FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+    pub value: &'vir AdtDestructorData<'vir, vir::CSnap, vir::CSnap>,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum TyPurePrimDataKind<'vir> {
     Native(TyPurePrimDataNative<'vir>),
+    BitVec(TyPurePrimDataBitVec<'vir>),
     Float(FloatDomain<'vir>),
 }
 
@@ -104,6 +116,13 @@ impl<'vir> TyPurePrimData<'vir> {
     pub fn expect_native(&self) -> &TyPurePrimDataNative<'vir> {
         match &self.kind {
             TyPurePrimDataKind::Native(native) => native,
+            _ => panic!(),
+        }
+    }
+
+    pub fn expect_bitvec(&self) -> &TyPurePrimDataBitVec<'vir> {
+        match &self.kind {
+            TyPurePrimDataKind::BitVec(bv) => bv,
             _ => panic!(),
         }
     }
@@ -246,12 +265,9 @@ impl TaskEncoder for TyPureEnc {
                     let builder = builder.set_domain_builder();
                     TySpecifics::ArrayLike(super::kinds::arraylike::ty_pure(array, deps, builder)?)
                 }
-                TySpecifics::Primitive(prim) => {
-                    let builder = builder.set_domain_builder();
-                    TySpecifics::Primitive(super::kinds::primitive::ty_pure(
-                        vcx, prim, deps, builder,
-                    )?)
-                }
+                TySpecifics::Primitive(prim) => TySpecifics::Primitive(
+                    super::kinds::primitive::ty_pure(vcx, prim, deps, &mut builder)?,
+                ),
                 TySpecifics::ImmRef(immref) => {
                     let builder = builder.set_adt_builder();
                     TySpecifics::ImmRef(super::kinds::immref::ty_pure(immref, deps, builder)?)
