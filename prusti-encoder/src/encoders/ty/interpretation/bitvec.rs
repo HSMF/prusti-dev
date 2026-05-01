@@ -61,6 +61,14 @@ impl From<prusti_rustc_interface::middle::ty::UintTy> for BitVecSize {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct OverflowChecks<'vir> {
+    pub nego: FunctionIdn<'vir, vir::CSnap, vir::Bool>,
+    pub addo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub subo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub mulo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct BitVecDomain<'vir> {
     pub domain: vir::DomainIdn<'vir, vir::CSnap>,
     pub from_int: FunctionIdn<'vir, vir::Prim, vir::CSnap>,
@@ -79,7 +87,8 @@ pub struct BitVecDomain<'vir> {
     pub saddo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
     pub usubo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
     pub ssubo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
-    pub mulo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub smulo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+    pub umulo: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
     pub udiv: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub urem: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub sdiv: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
@@ -88,6 +97,33 @@ pub struct BitVecDomain<'vir> {
     pub ult: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
     pub sle: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
     pub ule: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+}
+
+impl<'vir> BitVecDomain<'vir> {
+    pub fn overflow_checks(&self, is_unsigned: bool) -> OverflowChecks<'vir> {
+        if is_unsigned {
+            OverflowChecks {
+                nego: self.nego,
+                addo: self.uaddo,
+                subo: self.usubo,
+                mulo: self.usubo,
+            }
+        } else {
+            OverflowChecks {
+                nego: self.nego,
+                addo: self.saddo,
+                subo: self.ssubo,
+                mulo: self.ssubo,
+            }
+        }
+    }
+
+    pub fn literal<const VALUE: i128>(
+        &self,
+        vcx: &'vir VirCtxt<'vir>,
+    ) -> vir::ExprGenCSnap<'vir, (), !> {
+        (self.from_int)(vcx.mk_int::<VALUE>().upcast_ty())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -250,7 +286,8 @@ impl TaskEncoder for BitVecEnc {
             op!(nego(self_type) -> vir::TYPE_BOOL);
             op!(saddo(self_type, self_type) -> vir::TYPE_BOOL);
             op!(uaddo(self_type, self_type) -> vir::TYPE_BOOL);
-            op!(mulo(self_type, self_type) -> vir::TYPE_BOOL);
+            op!(smulo(self_type, self_type) -> vir::TYPE_BOOL);
+            op!(umulo(self_type, self_type) -> vir::TYPE_BOOL);
 
             // SMT-LIB doesn't give us those
             let sub = builder.function("sub", (self_type, self_type), self_type);
@@ -266,7 +303,7 @@ impl TaskEncoder for BitVecEnc {
                 "usubo",
                 vir::expr! {
                     forall x: [self_type], y: [self_type] :: { [usubo](x, y) }
-                    ([usubo](x, y)) == ( (x) < (y) )
+                    ([usubo](x, y)) == ( [ult] (x, y) )
                 },
             );
             let ssubo = builder.function("ssubo", (self_type, self_type), vir::TYPE_BOOL);
@@ -292,7 +329,7 @@ impl TaskEncoder for BitVecEnc {
             let domain_data = vcx.mk_domain::<(), !>(
                 domain_ident.name(),
                 &[],
-                &[],
+                vcx.alloc_slice(&builder.axioms),
                 vcx.alloc_slice(functions),
                 match *task_key {
                     BitVecSize::BitVec8 => backend_pair!(8),
@@ -324,7 +361,8 @@ impl TaskEncoder for BitVecEnc {
                     uaddo,
                     ssubo,
                     usubo,
-                    mulo,
+                    smulo,
+                    umulo,
                     udiv,
                     urem,
                     sdiv,

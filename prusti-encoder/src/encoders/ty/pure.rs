@@ -116,7 +116,7 @@ impl<'vir> TyPurePrimData<'vir> {
     pub fn expect_native(&self) -> &TyPurePrimDataNative<'vir> {
         match &self.kind {
             TyPurePrimDataKind::Native(native) => native,
-            _ => panic!(),
+            k => panic!("expected native but is {k:?}"),
         }
     }
 

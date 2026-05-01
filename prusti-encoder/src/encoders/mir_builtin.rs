@@ -940,23 +940,15 @@ impl MirBuiltinEnc {
     ) -> (ExprBool<'vir>, ExprCSnap<'vir>) {
         let is_unsigned = matches!(l_ty.kind(), ty::TyKind::Uint(..));
         let (binop, overflow_op) = match op {
-            mir::BinOp::Add | mir::BinOp::AddWithOverflow => (
-                bit_vec.add,
-                if is_unsigned {
-                    bit_vec.uaddo
-                } else {
-                    bit_vec.saddo
-                },
-            ),
-            mir::BinOp::Sub | mir::BinOp::SubWithOverflow => (
-                bit_vec.sub,
-                if is_unsigned {
-                    bit_vec.usubo
-                } else {
-                    bit_vec.ssubo
-                },
-            ),
-            mir::BinOp::Mul | mir::BinOp::MulWithOverflow => (bit_vec.mul, bit_vec.mulo),
+            mir::BinOp::Add | mir::BinOp::AddWithOverflow => {
+                (bit_vec.add, bit_vec.overflow_checks(is_unsigned).addo)
+            }
+            mir::BinOp::Sub | mir::BinOp::SubWithOverflow => {
+                (bit_vec.sub, bit_vec.overflow_checks(is_unsigned).subo)
+            }
+            mir::BinOp::Mul | mir::BinOp::MulWithOverflow => {
+                (bit_vec.mul, bit_vec.overflow_checks(is_unsigned).mulo)
+            }
             _ => panic!("not an arithmetic op {op:?}"),
         };
 
@@ -974,17 +966,18 @@ impl MirBuiltinEnc {
     ) -> (Vec<vir::ExprBool<'vir>>, SnapOrBool<'vir>) {
         use SnapOrBool::{Bool, Snap};
         use mir::BinOp as B;
+        let is_unsigned = matches!(l_ty.kind(), ty::TyKind::Uint(..));
         match op {
             B::Lt | B::Le | B::Ge | B::Gt => {
-                let val = match (op, l_ty.kind()) {
-                    (B::Lt, ty::TyKind::Uint(..)) => (bit_vec.ult)(lhs, rhs),
-                    (B::Lt, ty::TyKind::Int(..)) => (bit_vec.slt)(lhs, rhs),
-                    (B::Gt, ty::TyKind::Uint(..)) => (bit_vec.ult)(rhs, lhs),
-                    (B::Gt, ty::TyKind::Int(..)) => (bit_vec.slt)(rhs, lhs),
-                    (B::Le, ty::TyKind::Uint(..)) => (bit_vec.ule)(lhs, rhs),
-                    (B::Le, ty::TyKind::Int(..)) => (bit_vec.sle)(lhs, rhs),
-                    (B::Ge, ty::TyKind::Uint(..)) => (bit_vec.ule)(rhs, lhs),
-                    (B::Ge, ty::TyKind::Int(..)) => (bit_vec.sle)(rhs, lhs),
+                let val = match (op, is_unsigned) {
+                    (B::Lt, true) => (bit_vec.ult)(lhs, rhs),
+                    (B::Lt, false) => (bit_vec.slt)(lhs, rhs),
+                    (B::Gt, true) => (bit_vec.ult)(rhs, lhs),
+                    (B::Gt, false) => (bit_vec.slt)(rhs, lhs),
+                    (B::Le, true) => (bit_vec.ule)(lhs, rhs),
+                    (B::Le, false) => (bit_vec.sle)(lhs, rhs),
+                    (B::Ge, true) => (bit_vec.ule)(rhs, lhs),
+                    (B::Ge, false) => (bit_vec.sle)(rhs, lhs),
                     _ => unreachable!("{:?}", l_ty.kind()),
                 };
                 (vec![], Bool(val))
@@ -1003,6 +996,22 @@ impl MirBuiltinEnc {
 
             B::BitOr => (vec![], Snap((bit_vec.or)(lhs, rhs))),
             B::BitAnd => (vec![], Snap((bit_vec.and)(lhs, rhs))),
+
+            B::Rem | B::Div => {
+                let pre = vcx
+                    .mk_bin_op_expr(vir::BinOpKind::CmpNe, bit_vec.literal::<0>(vcx), rhs)
+                    .downcast_ty::<vir::Bool>();
+
+                let pres = vec![pre];
+
+                match (op, is_unsigned) {
+                    (B::Rem, true) => (pres, Snap((bit_vec.urem)(lhs, rhs))),
+                    (B::Rem, false) => (pres, Snap((bit_vec.srem)(lhs, rhs))),
+                    (B::Div, true) => (pres, Snap((bit_vec.udiv)(lhs, rhs))),
+                    (B::Div, false) => (pres, Snap((bit_vec.sdiv)(lhs, rhs))),
+                    _ => unreachable!(),
+                }
+            }
 
             _ => todo!("unhandled op {op:?}"),
         }
