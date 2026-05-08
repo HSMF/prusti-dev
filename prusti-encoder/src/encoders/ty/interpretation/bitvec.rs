@@ -99,6 +99,13 @@ pub struct BitVecDomain<'vir> {
     pub ule: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
 }
 
+fn literal<'vir, const VALUE: i128>(
+    vcx: &'vir VirCtxt<'vir>,
+    from_int: FunctionIdn<'vir, vir::Prim, vir::CSnap>,
+) -> vir::ExprGenCSnap<'vir, (), !> {
+    (from_int)(vcx.mk_int::<VALUE>().upcast_ty())
+}
+
 impl<'vir> BitVecDomain<'vir> {
     pub fn overflow_checks(&self, is_unsigned: bool) -> OverflowChecks<'vir> {
         if is_unsigned {
@@ -106,14 +113,14 @@ impl<'vir> BitVecDomain<'vir> {
                 nego: self.nego,
                 addo: self.uaddo,
                 subo: self.usubo,
-                mulo: self.usubo,
+                mulo: self.umulo,
             }
         } else {
             OverflowChecks {
                 nego: self.nego,
                 addo: self.saddo,
                 subo: self.ssubo,
-                mulo: self.ssubo,
+                mulo: self.smulo,
             }
         }
     }
@@ -122,7 +129,7 @@ impl<'vir> BitVecDomain<'vir> {
         &self,
         vcx: &'vir VirCtxt<'vir>,
     ) -> vir::ExprGenCSnap<'vir, (), !> {
-        (self.from_int)(vcx.mk_int::<VALUE>().upcast_ty())
+        literal::<VALUE>(vcx, self.from_int)
     }
 }
 
@@ -307,7 +314,20 @@ impl TaskEncoder for BitVecEnc {
                 },
             );
             let ssubo = builder.function("ssubo", (self_type, self_type), vir::TYPE_BOOL);
-            // TODO: interpret ssubo
+            {
+                let zero = literal::<0>(vcx, from_int);
+                builder.axiom(
+                    "ssubo",
+                    vir::expr! {
+                        forall x: [self_type], y: [self_type] :: { [ssubo](x, y) }
+                            ([ssubo](x, y)) == (
+                                ( ( [sle](zero, x) ) != ( [sle](zero, y) ) ) /* x and y differ in sign */
+                                &&
+                                ( ( [sle](zero, x)  ) != ( [sle](zero, [sub](x, y)) ) ) /* x and x-y differ in sign */
+                            )
+                    },
+                );
+            }
 
             let functions = &builder.functions;
 

@@ -498,6 +498,22 @@ impl<'tcx> VirCtxt<'tcx> {
             .downcast_ty()
     }
 
+    pub fn mk_ne_expr<'vir, Curr, Next, T: CompType>(
+        &'vir self,
+        lhs: ExprGen<'vir, Curr, Next, T>,
+        rhs: ExprGen<'vir, Curr, Next, T>,
+    ) -> ExprGenBool<'vir, Curr, Next> {
+        if lhs.ty() != rhs.ty() {
+            typecheck_error!(
+                "Type mismatch in equality expression. LHS type: {:?}, RHS type: {:?}",
+                lhs.ty(),
+                rhs.ty(),
+            );
+        }
+        self.mk_bin_op_expr_inner(BinOpKind::CmpNe, lhs.as_dyn(), rhs.as_dyn())
+            .downcast_ty()
+    }
+
     pub fn mk_set_in_expr<'vir, Curr, Next, T: CompType>(
         &'vir self,
         elem: ExprGen<'vir, Curr, Next, T>,

@@ -296,6 +296,10 @@ macro_rules! expr_inner {
         $crate::expr_inner!(@expr_one; $($lhs)*),
         $crate::expr_inner!(@expr_one; $($rhs)*),
     ) };
+    (@expr_one; ( $($lhs:tt)+ ) != ( $($rhs:tt)+ )) => { vcx!().mk_ne_expr(
+        $crate::expr_inner!(@expr_one; $($lhs)*),
+        $crate::expr_inner!(@expr_one; $($rhs)*),
+    ) };
     (@expr_one; ( $($cond:tt)+ ) ? ( $($e_then:tt)+ ) : ( $($e_else:tt)+ )) => { vcx!().mk_ternary_expr(
         $crate::expr_inner!(@expr_one; $($cond)*),
         $crate::expr_inner!(@expr_one; $($e_then)*),
