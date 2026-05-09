@@ -1013,6 +1013,22 @@ impl MirBuiltinEnc {
                 }
             }
 
+            B::Shl => {
+                let mask = {
+                    // inlined vcx.get_bit_width_int() but subtracting one
+                    match VirCtxt::get_int_data(l_ty.kind()) {
+                        (u8::BITS, _) => vcx.mk_uint::<{ u8::BITS as u128 - 1 }>(),
+                        (u16::BITS, _) => vcx.mk_uint::<{ u16::BITS as u128 - 1 }>(),
+                        (u32::BITS, _) => vcx.mk_uint::<{ u32::BITS as u128 - 1 }>(),
+                        (u64::BITS, _) => vcx.mk_uint::<{ u64::BITS as u128 - 1 }>(),
+                        (u128::BITS, _) => vcx.mk_uint::<{ u128::BITS as u128 - 1 }>(),
+                        _ => unreachable!(),
+                    }
+                };
+                let rhs = (bit_vec.and)(rhs, (bit_vec.from_int)(mask.upcast_ty()));
+                (vec![], Snap((bit_vec.shl)(lhs, rhs)))
+            }
+
             _ => todo!("unhandled op {op:?}"),
         }
     }

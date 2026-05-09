@@ -1076,8 +1076,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let e_ty = self.ty_use_impure(place_ty.ty).expect_array();
                 let idx = self.encode_place_with_snap(mir::Place::from(idx).into());
                 let usize_ty = self.ty_use_pure(self.vcx.tcx().types.usize);
+                let idx_bv = usize_ty.expect_primitive().expect_bitvec();
                 let idx =
-                    usize_ty.expect_native().snap_to_prim.call()(idx.1.downcast_ty()).downcast_ty();
+                    (idx_bv.bit_vec.to_int)(idx_bv.value.call()(idx.1.downcast_ty())).downcast_ty();
                 PlaceExpr {
                     address: e_ty.ref_to_index_ref(expr.address, idx),
                     snap: expr.snap.map(|snap| {
