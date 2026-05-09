@@ -169,6 +169,10 @@ pub struct ViperBackendConfig {
 impl ViperBackendConfig {
     pub fn new(backend: VerificationBackend) -> Self {
         let mut verifier_args = config::extra_verifier_args();
+        let uses_cvc5 = verifier_args
+            .windows(2)
+            .any(|pair| pair == ["--prover", "cvc5"])
+            || verifier_args.iter().any(|arg| arg == "--prover=cvc5");
         match backend {
             VerificationBackend::Silicon => {
                 if config::use_more_complete_exhale() {
@@ -195,6 +199,9 @@ impl ViperBackendConfig {
                     config::smt_qi_eager_threshold(),
                     config::counterexample()
                 );
+                if uses_cvc5 {
+                    prover_args = String::new();
+                }
 
                 if let Some(smt_qi_profile) = config::smt_qi_profile() {
                     prover_args = format!("{prover_args} smt.qi.profile={smt_qi_profile}");
