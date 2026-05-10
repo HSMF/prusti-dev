@@ -66,7 +66,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
                 let (to_bits, to_signed) = vir::VirCtxt::get_int_data(ty.kind());
                 let (from_bits, from_signed) = vir::VirCtxt::get_int_data(from_ty.kind());
 
-                let from_int = from_vir_ty.bit_vec.to_int.call()(from_bv);
+                let from_int = from_vir_ty.bit_vec.to_int(from_signed).call()(from_bv);
 
                 let needs_min_check = match (from_signed, to_signed) {
                     (true, true) => from_bits > to_bits, // both signed, check required if target has fewer bits
@@ -108,8 +108,10 @@ pub(crate) trait PureRvalueEnc<'vir> {
                 }
                 Ok(EncodedCast {
                     preconditions,
-                    expr: to_vir_ty.cons.call()(to_vir_ty.bit_vec.from_int.call()(from_int))
-                        .upcast_ty(),
+                    expr: to_vir_ty.cons.call()(to_vir_ty.bit_vec.from_int.call()(
+                        from_int.upcast_ty(),
+                    ))
+                    .upcast_ty(),
                 })
             }
             _ => todo!("cast kind {kind:?}"),

@@ -23,7 +23,7 @@ use crate::encoders::{
     custom::PairUseEnc,
     ty::{
         generics::{GArgsCastEnc, trait_impls::TraitImplEnc, traits::TraitEnc},
-        interpretation::bitvec::{BitVecConversionEnc, BitVecEnc},
+        interpretation::bitvec::BitVecEnc,
         lifted::{TyConstructorEnc, TypeOfEnc},
     },
 };
@@ -94,8 +94,6 @@ pub fn test_entrypoint<'tcx>(
     program.header("snapshots");
     crate::encoders::TyUsePureEnc::emit_outputs(&mut program);
     BitVecEnc::emit_outputs(&mut program);
-
-    BitVecConversionEnc::emit_outputs(&mut program);
 
     program.header("predicates");
     crate::encoders::TyUseImpureEnc::emit_outputs(&mut program);

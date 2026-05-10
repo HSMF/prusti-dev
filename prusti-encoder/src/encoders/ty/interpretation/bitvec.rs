@@ -1,10 +1,8 @@
-use task_encoder::{OutputRefAny, TaskEncoder};
+use task_encoder::TaskEncoder;
 use vir::{
     Arity, BackendInterpretationPair, CastType, CompType, DomainAxiomData, DomainAxiomGenData,
     DomainFunctionData, DomainGenData, DomainIdnCSnap, FunctionIdn, Type, VirCtxt,
 };
-
-use crate::encoders::ty::{RustTy, pure::TyPureEnc};
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone, Copy)]
 pub enum BitVecSize {
@@ -72,7 +70,8 @@ pub struct OverflowChecks<'vir> {
 pub struct BitVecDomain<'vir> {
     pub domain: vir::DomainIdn<'vir, vir::CSnap>,
     pub from_int: FunctionIdn<'vir, vir::Prim, vir::CSnap>,
-    pub to_int: FunctionIdn<'vir, vir::CSnap, vir::Prim>,
+    pub to_uint: FunctionIdn<'vir, vir::CSnap, vir::Int>,
+    pub to_sint: FunctionIdn<'vir, vir::CSnap, vir::Int>,
     pub shl: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub shr: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub not: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
@@ -97,6 +96,17 @@ pub struct BitVecDomain<'vir> {
     pub ult: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
     pub sle: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
     pub ule: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
+}
+
+impl<'vir> BitVecDomain<'vir> {
+    #[allow(clippy::wrong_self_convention)]
+    pub fn to_int(&self, is_signed: bool) -> FunctionIdn<'vir, vir::CSnap, vir::Int> {
+        if is_signed {
+            self.to_sint
+        } else {
+            self.to_uint
+        }
+    }
 }
 
 fn literal<'vir, const VALUE: i128>(
@@ -132,14 +142,6 @@ impl<'vir> BitVecDomain<'vir> {
         literal::<VALUE>(vcx, self.from_int)
     }
 }
-
-#[derive(Debug, Clone, Copy)]
-pub struct BitVecConversion<'vir> {
-    pub from_int: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
-    pub to_int: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
-}
-
-impl OutputRefAny for BitVecConversion<'_> {}
 
 pub struct BitVecEnc;
 
@@ -244,18 +246,6 @@ impl TaskEncoder for BitVecEnc {
                     BitVecSize::BitVec128 => "(_ int2bv 128)",
                 },
             );
-            let to_int = builder.backend_func(
-                "to_int",
-                self_type,
-                vir::TYPE_INT.upcast_ty(),
-                match *task_key {
-                    BitVecSize::BitVec8 => "(_ bv2int 8)",
-                    BitVecSize::BitVec16 => "(_ bv2int 16)",
-                    BitVecSize::BitVec32 => "(_ bv2int 32)",
-                    BitVecSize::BitVec64 => "(_ bv2int 64)",
-                    BitVecSize::BitVec128 => "(_ bv2int 128)",
-                },
-            );
 
             macro_rules! op {
                 ($name:ident($($args:expr),*) -> $ret:expr) => {
@@ -269,6 +259,11 @@ impl TaskEncoder for BitVecEnc {
                     );
                 };
             }
+
+            let ubv_to_int =
+                builder.backend_func("ubv_to_int", self_type, vir::TYPE_INT, "ubv_to_int");
+            let sbv_to_int =
+                builder.backend_func("sbv_to_int", self_type, vir::TYPE_INT, "sbv_to_int");
 
             // bit ops
             op!(shl(self_type, self_type) -> self_type);
@@ -366,7 +361,8 @@ impl TaskEncoder for BitVecEnc {
                 BitVecDomain {
                     domain: domain_ident,
                     from_int,
-                    to_int,
+                    to_uint: ubv_to_int,
+                    to_sint: sbv_to_int,
                     shl,
                     shr,
                     not,
@@ -394,105 +390,5 @@ impl TaskEncoder for BitVecEnc {
                 },
             ))
         })
-    }
-}
-
-pub struct BitVecConversionEnc;
-
-impl TaskEncoder for BitVecConversionEnc {
-    task_encoder::encoder_cache!(BitVecConversionEnc);
-
-    /// bitvec type, rust type
-    type TaskDescription<'vir> = (BitVecSize, RustTy<'vir>);
-
-    type TaskKey<'vir> = Self::TaskDescription<'vir>;
-
-    type OutputFullLocal<'vir> = Vec<vir::Function<'vir>>;
-
-    type OutputRef<'vir> = BitVecConversion<'vir>;
-
-    type EncodingError = !;
-
-    fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
-        *task
-    }
-
-    fn do_encode_full<'vir>(
-        task_key: &Self::TaskKey<'vir>,
-        deps: &mut task_encoder::TaskEncoderDependencies<'vir, Self>,
-    ) -> task_encoder::EncodeFullResult<'vir, Self> {
-        let pure = deps.require_dep::<TyPureEnc>(task_key.1)?;
-        let bit_vec = deps.require_dep::<BitVecEnc>(task_key.0)?;
-
-        vir::with_vcx(|vcx| {
-            let to_prim = pure.expect_native().snap_to_prim;
-            let from_prim = pure.expect_primitive().prim_to_snap;
-
-            let bv2int = bit_vec.to_int;
-            // let int2bv = bit_vec.from_int;
-
-            let int_ty = (pure.domain)().downcast_ty::<vir::CSnap>();
-            let bv_ty = (bit_vec.domain)();
-
-            let (to_bv, to_bv_data) = {
-                let name = vir::vir_format_identifier!(
-                    vcx,
-                    "{}_to_{}",
-                    pure.domain.name(),
-                    bit_vec.domain.name()
-                );
-                let to_bv = FunctionIdn::<vir::CSnap, _>::new(name, int_ty, bv_ty);
-                let arg = vcx.mk_local_decl("arg", int_ty);
-                let result = vcx.mk_result(bv_ty);
-                // bv2int(to_bv(x)) = bv2int(int2bv(to_prim(arg))) = to_prim(arg)
-                let post = vir::expr!(([to_prim](arg)) == ([bv2int](result)));
-                (
-                    to_bv,
-                    vcx.mk_function::<_, _, _, vir::CSnap>(
-                        to_bv,
-                        (arg,),
-                        &[],
-                        vcx.alloc_slice(&[post]),
-                        None,
-                        None,
-                    ),
-                )
-            };
-
-            let (from_bv, from_bv_data) = {
-                let name = vir::vir_format_identifier!(
-                    vcx,
-                    "{}_from_{}",
-                    pure.domain.name(),
-                    bit_vec.domain.name()
-                );
-                let from_bv = FunctionIdn::<vir::CSnap, _>::new(name, bv_ty, int_ty);
-                let arg = vcx.mk_local_decl("arg", bv_ty);
-                let val = vir::expr! {
-                    [from_prim]([bv2int](arg))
-                };
-                (
-                    from_bv,
-                    vcx.mk_function(from_bv, (arg,), &[], &[], None, Some(val)),
-                )
-            };
-
-            let conv = BitVecConversion {
-                from_int: to_bv,
-                to_int: from_bv,
-            };
-            deps.emit_output_ref(*task_key, conv)?;
-
-            Ok((vec![to_bv_data, from_bv_data], ()))
-        })
-    }
-
-    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for output in BitVecConversionEnc::all_outputs_local_no_errors()
-            .iter()
-            .flatten()
-        {
-            program.add_function(output);
-        }
     }
 }
