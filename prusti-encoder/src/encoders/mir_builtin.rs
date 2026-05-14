@@ -419,7 +419,17 @@ impl MirBuiltinEnc {
                         assert!(matches!(op, mir::UnOp::Neg));
                         (float.fp_neg)(snap_arg)
                     }
-                    _ => todo!(),
+                    TyPurePrimDataKind::BitVec(bit_vec) => {
+                        let bv_arg = bit_vec.value.call()(snap_arg);
+
+                        let res = match op {
+                            mir::UnOp::Neg => (bit_vec.bit_vec.neg)(bv_arg),
+                            mir::UnOp::Not => (bit_vec.bit_vec.not)(bv_arg),
+                            _ => unreachable!(),
+                        };
+
+                        (bit_vec.cons)(res)
+                    }
                 };
                 Ok(vcx.mk_function(function, (snap_arg_decl,), &[], &[], None, Some(body)))
             }
@@ -523,7 +533,17 @@ impl MirBuiltinEnc {
             }
             TyPurePrimDataKind::BitVec(bit_vec) => {
                 let lhs_bv = bit_vec.value.call()(lhs);
-                let rhs_bv = prim_r_ty.expect_bitvec().value.call()(rhs);
+                let r_bit_vec = prim_r_ty.expect_bitvec();
+                let mut rhs_bv = r_bit_vec.value.call()(rhs);
+
+                if l_ty != r_ty {
+                    let as_int = if l_ty.is_signed() {
+                        (r_bit_vec.bit_vec.to_sint)(rhs_bv)
+                    } else {
+                        (r_bit_vec.bit_vec.to_uint)(rhs_bv)
+                    };
+                    rhs_bv = (bit_vec.bit_vec.from_int)(as_int.upcast_ty());
+                }
 
                 let (pres, val) = Self::handle_bin_op_bitvec(
                     vcx,
@@ -1013,7 +1033,7 @@ impl MirBuiltinEnc {
                 }
             }
 
-            B::Shl => {
+            B::Shl | B::Shr => {
                 let mask = {
                     // inlined vcx.get_bit_width_int() but subtracting one
                     match VirCtxt::get_int_data(l_ty.kind()) {
@@ -1026,7 +1046,11 @@ impl MirBuiltinEnc {
                     }
                 };
                 let rhs = (bit_vec.and)(rhs, (bit_vec.from_int)(mask.upcast_ty()));
-                (vec![], Snap((bit_vec.shl)(lhs, rhs)))
+                if op == B::Shl {
+                    (vec![], Snap((bit_vec.shl)(lhs, rhs)))
+                } else {
+                    (vec![], Snap((bit_vec.shr)(lhs, rhs)))
+                }
             }
 
             _ => todo!("unhandled op {op:?}"),

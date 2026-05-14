@@ -267,7 +267,7 @@ impl TaskEncoder for BitVecEnc {
 
             // bit ops
             op!(shl(self_type, self_type) -> self_type);
-            op!(shr(self_type, self_type) -> self_type);
+            op!(lshr(self_type, self_type) -> self_type);
             op!(or(self_type, self_type) -> self_type);
             op!(and(self_type, self_type) -> self_type);
             op!(not(self_type) -> self_type);
@@ -364,7 +364,7 @@ impl TaskEncoder for BitVecEnc {
                     to_uint: ubv_to_int,
                     to_sint: sbv_to_int,
                     shl,
-                    shr,
+                    shr: lshr,
                     not,
                     or,
                     and,

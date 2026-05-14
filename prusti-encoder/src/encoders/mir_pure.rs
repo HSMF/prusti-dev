@@ -966,10 +966,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let usize_ty = self.ty_use(self.vcx.tcx().types.usize);
                 let idx = usize_ty
                     .expect_primitive()
-                    .expect_native()
-                    .snap_to_prim
-                    .call()(idx.downcast_ty())
-                .downcast_ty();
+                    .expect_bitvec()
+                    .to_int(idx.downcast_ty(), false);
                 let proj_app = proj.index(encoded_place.snap.downcast_ty(), idx);
                 let place_ref = encoded_place
                     .place_ref

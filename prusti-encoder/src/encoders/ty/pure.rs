@@ -10,8 +10,8 @@ use prusti_rustc_interface::{
 };
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{
-    AdtDestructor, AdtDestructorData, Arity, BackendInterpretationPair, CastType, CompType,
-    DomainAxiomData, DomainIdnSnap, FunctionIdn, Type,
+    AdtDestructor, AdtDestructorData, Arity, BackendInterpretationPair, CSnap, CastType, CompType,
+    DomainAxiomData, DomainIdnSnap, ExprGenData, FunctionIdn, Type,
 };
 
 use crate::encoders::{
@@ -97,6 +97,17 @@ pub struct TyPurePrimDataBitVec<'vir> {
     /// BitVec -> adt
     pub cons: &'vir FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
     pub value: &'vir AdtDestructorData<'vir, vir::CSnap, vir::CSnap>,
+}
+
+impl<'vir> TyPurePrimDataBitVec<'vir> {
+    #[expect(clippy::wrong_self_convention)]
+    pub fn to_int<Curr: 'vir, Next: 'vir>(
+        &self,
+        int: &'vir ExprGenData<'vir, Curr, Next, CSnap>,
+        is_signed: bool,
+    ) -> &ExprGenData<'vir, Curr, Next, vir::Int> {
+        self.bit_vec.to_int(is_signed).call()(self.value.call()(int))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
