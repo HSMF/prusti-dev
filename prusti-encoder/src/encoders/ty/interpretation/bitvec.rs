@@ -77,6 +77,7 @@ pub struct BitVecDomain<'vir> {
     pub not: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
     pub or: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub and: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub xor: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub neg: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
     pub add: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub sub: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
@@ -292,6 +293,14 @@ impl TaskEncoder for BitVecEnc {
             op!(umulo(self_type, self_type) -> vir::TYPE_BOOL);
 
             // SMT-LIB doesn't give us those
+            let xor = builder.function("xor", (self_type, self_type), self_type);
+            builder.axiom(
+                "xor",
+                vir::expr! {
+                    forall x: [self_type], y: [self_type] :: { [xor](x, y) }
+                    ([xor](x, y)) == ([or]( ([and]( x, [not](y) )), ([and]( ([not](x)), y )) ))
+                },
+            );
             let sub = builder.function("sub", (self_type, self_type), self_type);
             builder.axiom(
                 "sub",
@@ -368,6 +377,7 @@ impl TaskEncoder for BitVecEnc {
                     not,
                     or,
                     and,
+                    xor,
                     neg,
                     add,
                     sub,

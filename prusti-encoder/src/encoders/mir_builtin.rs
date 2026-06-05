@@ -1016,6 +1016,7 @@ impl MirBuiltinEnc {
 
             B::BitOr => (vec![], Snap((bit_vec.or)(lhs, rhs))),
             B::BitAnd => (vec![], Snap((bit_vec.and)(lhs, rhs))),
+            B::BitXor => (vec![], Snap((bit_vec.xor)(lhs, rhs))),
 
             B::Rem | B::Div => {
                 let pre = vcx
