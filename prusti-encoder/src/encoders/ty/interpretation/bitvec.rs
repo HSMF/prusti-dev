@@ -165,7 +165,7 @@ impl TaskEncoder for BitVecEnc {
             );
             let shl = builder.backend_func("shl", (self_type, self_type), self_type, "bvshl");
 
-            let shr = builder.backend_func("shr", (self_type, self_type), self_type, "bvshr");
+            let shr = builder.backend_func("shr", (self_type, self_type), self_type, "bvlshr");
             let bit_or = builder.backend_func("bit_or", (self_type, self_type), self_type, "bvor");
             let bit_and =
                 builder.backend_func("bit_and", (self_type, self_type), self_type, "bvand");
