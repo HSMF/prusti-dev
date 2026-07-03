@@ -394,11 +394,31 @@ impl MirBuiltinEnc {
                 let prim_res_ty = e_ty.expect_primitive();
                 let snap_arg = vcx.mk_local_ex(snap_arg_decl);
                 let body = match prim_res_ty.kind {
+                    TyPurePrimDataKind::Native(_)
+                        if op == mir::UnOp::Not
+                            && matches!(
+                                operand_ty.kind(),
+                                ty::TyKind::Int(_) | ty::TyKind::Uint(_)
+                            ) =>
+                    {
+                        let bit_vec_size = match operand_ty.kind() {
+                            ty::TyKind::Int(kind) => (*kind).into(),
+                            ty::TyKind::Uint(kind) => (*kind).into(),
+                            k => todo!("not int {k:?}"),
+                        };
+                        let conversion =
+                            deps.require_ref::<BitVecConversionEnc>((bit_vec_size, ty_task.ty))?;
+                        let bit_vec = deps.require_dep::<BitVecEnc>(bit_vec_size)?;
+                        let e = (conversion.from_int)(snap_arg);
+                        let e = (bit_vec.bit_not)(e);
+                        (conversion.to_int)(e)
+                    }
                     TyPurePrimDataKind::Native(native) => {
                         let prim_arg = (native.snap_to_prim)(snap_arg);
                         let mut val = (prim_res_ty.prim_to_snap)(
                             vcx.mk_unary_op_expr(vir::UnOpKind::from(op), prim_arg),
                         );
+
                         // Can overflow when doing `- iN::MIN -> iN::MIN`. There is no
                         // `CheckedUnOp`, instead the compiler puts an `TerminatorKind::Assert`
                         // before in debug mode. We should still produce the correct result in
