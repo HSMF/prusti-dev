@@ -896,10 +896,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             .unwrap();
                         let usize_ty_out = self.ty_use_pure(self.vcx.tcx().types.usize);
                         Some(
-                            (usize_ty_out.expect_primitive().expect_native().snap_to_prim)(
-                                index.downcast_ty(),
-                            )
-                            .downcast_ty(),
+                            usize_ty_out
+                                .expect_primitive()
+                                .expect_bitvec()
+                                .to_int(index.downcast_ty(), false),
                         )
                     }
                     _ => None,

@@ -245,8 +245,10 @@ impl MirBuiltinEnc {
                     context: params,
                 })?;
                 let ty_task = RustTyDecomposition::from_prim_ty(vcx.tcx().types.usize);
-                let usize_out = deps.require_dep::<TyUsePureEnc>(ty_task)?.expect_native();
-                (usize_out.snap_to_prim)(const_enc).downcast_ty()
+                deps.require_dep::<TyUsePureEnc>(ty_task)?
+                    .expect_primitive()
+                    .expect_bitvec()
+                    .to_int(const_enc, false)
             }
             _ => src_array_pure.len(src_value),
         };
