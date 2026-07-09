@@ -465,9 +465,12 @@ impl MirBuiltinEnc {
                 let body = match prim_res_ty.kind {
                     TyPurePrimDataKind::Native(native) => {
                         let prim_arg = (native.snap_to_prim)(snap_arg);
-                        let mut val = (prim_res_ty.prim_to_snap)(
-                            vcx.mk_unary_op_expr(vir::UnOpKind::from(op), prim_arg),
-                        );
+                        let expr = if operand_ty.is_integral() && op == mir::UnOp::Not {
+                            Self::encode_not(vcx, prim_arg, Self::get_width(operand_ty))
+                        } else {
+                            vcx.mk_unary_op_expr(vir::UnOpKind::from(op), prim_arg)
+                        };
+                        let mut val = (prim_res_ty.prim_to_snap)(expr);
                         // Can overflow when doing `- iN::MIN -> iN::MIN`. There is no
                         // `CheckedUnOp`, instead the compiler puts an `TerminatorKind::Assert`
                         // before in debug mode. We should still produce the correct result in
@@ -675,6 +678,19 @@ impl MirBuiltinEnc {
             .into_iter()
             .zip(rhs_bitvec)
             .map(|(a, b)| f(a, b))
+            .collect();
+        Self::cons_bitvec(vcx, res_bitvec)
+    }
+
+    fn encode_not<'vir>(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        lhs: vir::ExprPrim<'vir>,
+        width: u64,
+    ) -> vir::ExprPrim<'vir> {
+        let lhs_bitvec = Self::explode_bitvec(vcx, width, lhs);
+        let res_bitvec = lhs_bitvec
+            .into_iter()
+            .map(|a| vcx.mk_bin_op_expr(vir::BinOpKind::Sub, vcx.mk_uint::<1>().upcast_ty(), a))
             .collect();
         Self::cons_bitvec(vcx, res_bitvec)
     }

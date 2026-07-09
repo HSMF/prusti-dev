@@ -236,6 +236,21 @@ impl<'tcx> crate::VirCtxt<'tcx> {
         const_expr!(&ExprKindGenData::<(), !>::Const(&ConstData::Int(VALUE)), Int => TypeInt)
     }
 
+    pub fn mk_uint_dyn<'vir>(&'vir self, value: u128) -> ExprInt<'vir> {
+        {
+            const TY: crate::TypeInt =
+                unsafe { &crate::TypeData::new_unchecked(crate::TypeKind::Int) };
+            self.alloc(ExprGenData {
+                kind: self.alloc(ExprKindGenData::<(), !>::Const(
+                    self.alloc(ConstData::Int(value)),
+                )),
+                debug_info: DEBUGINFO_NONE,
+                span: None,
+                ty: TY,
+            })
+        }
+    }
+
     pub const fn mk_wildcard<'vir>(&'vir self) -> ExprPerm<'vir> {
         const_expr!(&ExprKindGenData::Const(&ConstData::Wildcard), Perm => TypePerm)
     }
