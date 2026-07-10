@@ -394,6 +394,19 @@ impl MirBuiltinEnc {
                 let prim_res_ty = e_ty.expect_primitive();
                 let snap_arg = vcx.mk_local_ex(snap_arg_decl);
                 let body = match prim_res_ty.kind {
+                    TyPurePrimDataKind::Native(prim_ty)
+                        if op == mir::UnOp::Not && operand_ty.is_integral() =>
+                    {
+                        let bit_vec_size = match operand_ty.kind() {
+                            ty::TyKind::Int(kind) => (*kind).into(),
+                            ty::TyKind::Uint(kind) => (*kind).into(),
+                            k => todo!("not int {k:?}"),
+                        };
+                        let bit_vec = deps.require_dep::<BitVecEnc>(bit_vec_size)?;
+                        let e = (prim_ty.snap_to_bitvec)(snap_arg);
+                        let e = (bit_vec.bit_not)(e);
+                        (prim_ty.bitvec_to_snap)(e)
+                    }
                     TyPurePrimDataKind::Native(native) => {
                         let prim_arg = (native.snap_to_prim)(snap_arg);
                         let mut val = (prim_res_ty.prim_to_snap)(
