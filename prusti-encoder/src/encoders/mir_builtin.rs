@@ -465,8 +465,8 @@ impl MirBuiltinEnc {
                 let body = match prim_res_ty.kind {
                     TyPurePrimDataKind::Native(native) => {
                         let prim_arg = (native.snap_to_prim)(snap_arg);
-                        let expr = if operand_ty.is_integral() && op == mir::UnOp::Not {
-                            Self::encode_not(vcx, prim_arg, Self::get_width(operand_ty))
+                        let expr = if op == mir::UnOp::Not {
+                            Self::encode_not(vcx, prim_arg, operand_ty)
                         } else {
                             vcx.mk_unary_op_expr(vir::UnOpKind::from(op), prim_arg)
                         };
@@ -618,7 +618,8 @@ impl MirBuiltinEnc {
         match l_ty.kind() {
             ty::TyKind::Int(i) => i.bit_width().unwrap_or(std::mem::size_of::<isize>() as u64),
             ty::TyKind::Uint(u) => u.bit_width().unwrap_or(std::mem::size_of::<usize>() as u64),
-            _ => unreachable!(),
+            ty::TyKind::Bool => 1,
+            _ => unreachable!("{l_ty:?}"),
         }
     }
 
@@ -631,7 +632,7 @@ impl MirBuiltinEnc {
             int = vcx.mk_bin_op_expr(
                 vir::BinOpKind::Div,
                 int,
-                vcx.mk_uint_dyn(bit as _).upcast_ty(),
+                vcx.mk_uint_dyn(2u128.pow(bit as _)).upcast_ty(),
             );
         }
         vcx.mk_bin_op_expr(vir::BinOpKind::Mod, int, vcx.mk_uint::<2>().upcast_ty())
@@ -685,8 +686,12 @@ impl MirBuiltinEnc {
     fn encode_not<'vir>(
         vcx: &'vir vir::VirCtxt<'vir>,
         lhs: vir::ExprPrim<'vir>,
-        width: u64,
+        l_ty: ty::Ty<'vir>,
     ) -> vir::ExprPrim<'vir> {
+        if l_ty.is_bool() {
+            return vcx.mk_unary_op_expr(vir::UnOpKind::Not, lhs);
+        }
+        let width = Self::get_width(l_ty);
         let lhs_bitvec = Self::explode_bitvec(vcx, width, lhs);
         let res_bitvec = lhs_bitvec
             .into_iter()
@@ -699,8 +704,12 @@ impl MirBuiltinEnc {
         vcx: &'vir vir::VirCtxt<'vir>,
         lhs: vir::ExprPrim<'vir>,
         rhs: vir::ExprPrim<'vir>,
-        width: u64,
+        l_ty: ty::Ty<'vir>,
     ) -> vir::ExprPrim<'vir> {
+        if l_ty.is_bool() {
+            return vcx.mk_bin_op_expr(vir::BinOpKind::And, lhs, rhs);
+        }
+        let width = Self::get_width(l_ty);
         Self::bitvec_binop(
             vcx,
             lhs,
@@ -714,8 +723,12 @@ impl MirBuiltinEnc {
         vcx: &'vir vir::VirCtxt<'vir>,
         lhs: vir::ExprPrim<'vir>,
         rhs: vir::ExprPrim<'vir>,
-        width: u64,
+        l_ty: ty::Ty<'vir>,
     ) -> vir::ExprPrim<'vir> {
+        if l_ty.is_bool() {
+            return vcx.mk_bin_op_expr(vir::BinOpKind::Or, lhs, rhs);
+        }
+        let width = Self::get_width(l_ty);
         let one = vcx.mk_uint::<1>().upcast_ty();
         Self::bitvec_binop(
             vcx,
@@ -730,10 +743,11 @@ impl MirBuiltinEnc {
         vcx: &'vir vir::VirCtxt<'vir>,
         lhs: vir::ExprPrim<'vir>,
         rhs: vir::ExprPrim<'vir>,
-        width: u64,
+        l_ty: ty::Ty<'vir>,
     ) -> vir::ExprPrim<'vir> {
         let one = vcx.mk_uint::<1>().upcast_ty();
         let zero = vcx.mk_uint::<0>().upcast_ty();
+        let width = Self::get_width(l_ty);
         Self::bitvec_binop(
             vcx,
             lhs,
@@ -741,30 +755,6 @@ impl MirBuiltinEnc {
             |a, b| vcx.mk_ternary_expr(vcx.mk_eq_expr(a, b), one, zero),
             width,
         )
-    }
-
-    fn encode_binop_bitwise<'vir>(
-        vcx: &'vir vir::VirCtxt<'vir>,
-        lhs: vir::ExprPrim<'vir>,
-        mut rhs: vir::ExprPrim<'vir>,
-        res_ty: ty::Ty<'vir>,
-        op: mir::BinOp,
-        l_ty: ty::Ty<'vir>,
-        _r_ty: ty::Ty<'vir>,
-    ) -> vir::ExprPrim<'vir> {
-        use mir::BinOp as B;
-        match op {
-            B::Shl | B::ShlUnchecked => {
-                Self::encode_shift_inner(vcx, Self::get_width(l_ty), vir::BinOpKind::Div, lhs, rhs)
-            }
-            B::Shr | B::ShrUnchecked => {
-                Self::encode_shift_inner(vcx, Self::get_width(l_ty), vir::BinOpKind::Mul, lhs, rhs)
-            }
-            B::BitAnd => todo!(),
-            B::BitOr => todo!(),
-            B::BitXor => todo!(),
-            _ => unreachable!(),
-        }
     }
 
     fn handle_bin_op_native<'vir>(
@@ -920,18 +910,9 @@ impl MirBuiltinEnc {
                     }
                     (pres, val)
                 }
-                B::BitXor => (
-                    Vec::new(),
-                    Self::encode_xor(vcx, lhs, rhs, Self::get_width(l_ty)),
-                ),
-                B::BitAnd => (
-                    Vec::new(),
-                    Self::encode_and(vcx, lhs, rhs, Self::get_width(l_ty)),
-                ),
-                B::BitOr => (
-                    Vec::new(),
-                    Self::encode_or(vcx, lhs, rhs, Self::get_width(l_ty)),
-                ),
+                B::BitXor => (Vec::new(), Self::encode_xor(vcx, lhs, rhs, l_ty)),
+                B::BitAnd => (Vec::new(), Self::encode_and(vcx, lhs, rhs, l_ty)),
+                B::BitOr => (Vec::new(), Self::encode_or(vcx, lhs, rhs, l_ty)),
                 // Cannot overflow and no undefined behavior
                 Eq | Lt | Le | Ne | Ge | Gt | Offset => (Vec::new(), viper_val()),
 
